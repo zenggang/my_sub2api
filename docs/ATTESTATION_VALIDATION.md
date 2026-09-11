@@ -47,3 +47,5 @@ openai_attestation_observed transport=http target=codex present=false value_coun
 ```
 
 这证明当前 bundled Codex CLI 路径没有产生 `x-oai-attestation`。它不是签名 Codex Desktop，因此不能作为 DeviceCheck E2E；该请求只用于确认“无证明”路径和观测字段。候选已停止，正式实例 SHA `9378ba6d…2020b`、PID `25190` 保持不变。
+
+进一步用同一官方二进制启动独立 app-server，并在 `initialize` 声明 `capabilities.requestAttestation=true`。当 turn 开始时，app-server 向客户端发出 `attestation/generate` 请求；由于这个独立进程没有 Desktop provider，随后超时。该结果与官方协议一致，证明真实 token 的最后生成责任在 Desktop 宿主，Sub2API 不应自行伪造。
