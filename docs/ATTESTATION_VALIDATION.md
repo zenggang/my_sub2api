@@ -4,7 +4,7 @@
 
 ## 代码与离线验证
 
-- HEAD：`e9d5bc221`（已推送到 `origin/design/attestation-forwarding`）。
+- 源码 HEAD：`2119ae874`（已推送到 `origin/design/attestation-forwarding`）。候选二进制对应实现提交：`2f653d5e4`；其后的提交只补充观测日志和验证文档，未改变本次 HTTP/WS 转发实现。
 - `go test ./...`：通过。
 - 前端 `pnpm build`：通过。
 - Linux amd64：`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath`，通过。
@@ -29,6 +29,8 @@
 - 正式二进制 SHA-256：`9378ba6db053081fcd03a8968c63f0f7a7d1116f46c99e47e8f761e8c1c2020b`。
 - `sub2api.service` PID：`25190`。
 - `18080/health`：通过。
+
+本轮再次使用 `gang.zeng1@zhaogang.com` 名下 API Key（内部 ID `34`）复验候选 `2f653d5e4`，启动时设置 `GATEWAY_OPENAI_ATTESTATION_MODE=all`，候选只监听 `127.0.0.1:18081`。五个模型均完成两轮 `response.completed`，第一轮工具调用和第二轮 `hello` 续聊通过；候选随后自动停止。复验后 `sub2api-attestation-canary.service` 为 inactive/unknown、18081 已释放，正式实例仍为 SHA `9378ba6d…`、PID `25190`，`18080/health` 返回 `{"status":"ok"}`。
 
 本次候选与正式实例共用运行环境中的 DB/Redis；候选未切换正式服务、未替换正式二进制。启动时正式实例存在活动请求，因此没有使用 `--allow-active` 或重启正式服务；候选仅绑定 18081，验证后立即停止。正式部署仍需独立的活动请求和迁移门禁。
 
