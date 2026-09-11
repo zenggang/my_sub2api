@@ -139,7 +139,7 @@ func applyOpenAIWSAttestationToDialHeaders(headers http.Header, attestation open
 	if headers == nil {
 		return
 	}
-	headers.Del(openAIAttestationHeader)
+	deleteOpenAIAttestationHeader(headers)
 	attestation = attestation.normalized()
 	if attestation.enabled() {
 		headers.Set(openAIAttestationHeader, attestation.Value)
@@ -2377,7 +2377,7 @@ func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequ
 	// x-oai-attestation is represented only by Attestation. Never retain a raw
 	// copy in the generic header map where it could reach lastAcquire/prewarm.
 	if copied.Headers != nil {
-		copied.Headers.Del(openAIAttestationHeader)
+		deleteOpenAIAttestationHeader(copied.Headers)
 	}
 	copied.WSURL = stringsTrim(req.WSURL)
 	copied.ProxyURL = stringsTrim(req.ProxyURL)

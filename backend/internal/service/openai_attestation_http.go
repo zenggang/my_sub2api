@@ -44,7 +44,7 @@ func (s *OpenAIGatewayService) applyOpenAIAttestationHTTPForwarding(c *gin.Conte
 	}
 	// The header is opt-in and target-gated. Remove any value that may have
 	// entered through a generic override before evaluating the forwarding mode.
-	req.Header.Del(openAIAttestationHeader)
+	deleteOpenAIAttestationHeader(req.Header)
 	if s == nil || s.cfg == nil || c == nil || c.Request == nil {
 		return nil
 	}
@@ -161,6 +161,17 @@ func incomingOpenAIAttestationValues(headers http.Header) []string {
 		values = append(values, entries...)
 	}
 	return values
+}
+
+// deleteOpenAIAttestationHeader removes every casing variant. Header.Del only
+// canonicalizes its argument, while account/header override paths may have
+// constructed a map entry with a non-canonical key.
+func deleteOpenAIAttestationHeader(headers http.Header) {
+	for key := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), openAIAttestationHeader) {
+			delete(headers, key)
+		}
+	}
 }
 
 func validateOpenAIAttestationValue(value string) error {

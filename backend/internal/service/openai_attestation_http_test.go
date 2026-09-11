@@ -98,6 +98,19 @@ func TestOpenAIAttestationHTTPForwardingRemovesUnscopedExistingHeader(t *testing
 	require.Empty(t, req.Header.Get(openAIAttestationHeader))
 }
 
+func TestOpenAIAttestationHTTPForwardingRemovesNonCanonicalExistingHeader(t *testing.T) {
+	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.client"}`)
+	req := httptest.NewRequest(http.MethodPost, openaiPlatformAPIURL, nil)
+	req.Header["x-oai-attestation"] = []string{"override-must-not-leak"}
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeHTTP},
+	}}}
+	require.NoError(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, openaiPlatformAPIURL))
+	for key := range req.Header {
+		require.False(t, strings.EqualFold(key, openAIAttestationHeader), "unexpected attestation key %q", key)
+	}
+}
+
 func TestOpenAIAttestationAllModeEnablesWSBridgeHTTPTurn(t *testing.T) {
 	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.bridge"}`)
 	c.Set("openai_ws_http_bridge", true)
