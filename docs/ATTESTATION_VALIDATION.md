@@ -64,4 +64,4 @@ present=true value_count=1 length=2987 malformed=false v=1 s=0
 
 ## 原生 WS 旁路结果
 
-继续让官方 app-server 声明 `supports_websockets=true`，并用同一真实 DeviceCheck provider 尝试原生 WS。候选收到下游 WebSocket 握手（HTTP 101），app-server 共响应了 8 次 attestation 生成请求；但 118 当前 API Key 分组的 5 个候选账号全部被 WS 能力/调度过滤，未建立上游 WS，客户端按既有策略重试 5 次后回退 HTTP，最终 `response.completed` 成功。该结果是环境账号能力门禁，不能归因于 attestation 代码失败；原生 WS 的 scope/pool 行为仍以离线 pool 测试为主要证据，待有可用 WS 账号时再做真实上游 WS E2E。
+继续让官方 app-server 声明 `supports_websockets=true`，并用同一真实 DeviceCheck provider 在当前源码候选上尝试原生 WS。候选收到下游 WebSocket 握手（HTTP 101），app-server 共响应了 8 次 attestation 生成请求；118 日志明确显示 `openai.websocket_ingress_started`，随后当前分组的 4 个候选账号均因不支持该模型的 WS 能力被过滤，未建立上游 WS。客户端按既有策略重试后回退 HTTP，最终 `turn/completed`，正式实例仍未被切换。该结果是环境账号能力门禁，不能归因于 attestation 代码失败；原生 WS 的 scope/pool 行为仍以离线 pool 测试为主要证据，待有可用 WS 账号时再做真实上游 WS E2E。
