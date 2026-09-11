@@ -206,3 +206,48 @@ attestation_transport
 6. 每阶段失败都保留候选和测试日志，回退代码提交，不修改账号配置来掩盖问题。
 
 完成标准不是“header 已加入白名单”，而是：真实入站证明在目标路径原值到达上游；无证明和无关目标不被污染；WS 连接不跨作用域复用；账号切换风险有可观测证据；业务终态和上游归因可回查。
+
+## 10. 子 agent review 结论（2026-09-11）
+
+独立只读 review 结论：总体方向和协议边界合理，但原方案不能直接进入编码，必须先处理以下问题。
+
+### P0：WS 池不能把证明放进现有 Headers/lastAcquire
+
+当前 `openAIWSAcquireRequest.Headers` 会被 `cloneOpenAIWSAcquireRequest` 深拷贝；`recordLastSuccessfulAcquire` 将它写入账号级 `lastAcquire`，`ensureTargetIdleAsync`/`prewarmConns` 随后可用这份请求重新拨号。若直接把 `x-oai-attestation` 放入 Headers，原始证明会进入账号级预热状态，可能跨下游上下文重拨。
+
+实施前必须把证明上下文与普通握手 Headers 分离，至少满足：
+
+- 原始证明不进入 `lastAcquire`、账号级 prewarm、数据库、Redis 或长期连接元数据。
+- 带证明的请求默认关闭跨下游 prewarm；若要支持预热，必须由同一个下游作用域通过 `HeadersFactory` 重新提供当前证明，不能从缓存 header 重拨。
+- 清理路径要覆盖 acquire 失败、连接关闭、客户端断开、failover 和 pool eviction。
+
+### P0：摘要不能代替下游连接作用域
+
+当前 `Acquire` 计算 handshake compatibility 后，preferred/pinned/least-busy 等多个选择路径都只比较 compatibility；`sameOpenAIWSPrewarmTarget` 也只比较 URL、proxy 和 compatibility。即使把 digest 加入 key，也无法满足“不同 scope 即使摘要相同也不能复用”。
+
+必须新增不可伪造的 downstream scope ID，并贯穿：
+
+```text
+ingress WS
+  → openAIWSAcquireRequest
+  → openAIWSConn
+  → preferred/pinned/least-busy pick
+  → handshake match
+  → prewarm target
+  → eviction/close
+```
+
+无 scope 但有证明时，保守策略是强制新建、禁止进入公共 idle pool；不能用空 scope 代表所有下游连接。连接关闭时清理 scope 关联，scope 不得作为长期设备 ID。
+
+### P1：其他必须在实现前定稿的点
+
+- 透传 helper 必须对最终 ChatGPT Codex OAuth/SetupToken Responses URL 做硬门禁；不能仅把 header 加到全局白名单，否则会污染 API key、第三方 base URL 和无关路径。
+- 重复 header（包括大小写变体）、长度超限和控制字符要定义成独立 malformed 类别；不得自动触发账号切换或无限重试。Go `Header.Get` 不足以检测大小写变体和多值，需要遍历原始 map。
+- A→B failover 不能无限带着同一证明尝试。需要一次上限和明确策略：区分证明/认证类 401/403 与 provider 503；疑似证明绑定失败时停止切号并保留证据；已有语义输出后继续遵守禁止 replay 的边界。
+- 长期日志不应保存稳定 digest prefix；默认只记录“入站/出站是否一致”，短期采样用 keyed HMAC 和明确 TTL/访问权限，限制 metrics cardinality。
+- 阶段 0 虽然不改业务数据，也会改日志；需定义采样率、字段 TTL、只读日志位置和真实 Desktop 入站/上游出站证据获取方式。不能只靠 Sub2API 自己的日志断言上游收到。
+- 18081 与线上共用 DB/Redis；候选运行前要明确只读/隔离策略，禁止 prewarm、账号状态或调度缓存污染线上。
+- 记录官方协议对应的 commit/version/date；补充未知 envelope 的 best-effort 解析规则、compact bridge 每 turn 的 scope 继承、连接关闭后的 context 清理和 metrics cardinality 上限。
+- 官方贡献目标要明确区分 `Wei-Shaw/sub2api` 与 `openai/codex`：Sub2API 的 header/连接池适配才可能进入前者；Codex app-server/DeviceCheck 变化属于后者，不能混在同一 PR。
+
+在这些 P0/P1 未写成实现合同前，不应开始加入白名单或修改 WS pool。该 review 不改变本方案“先观测、不伪造、分阶段候选”的总体结论。
