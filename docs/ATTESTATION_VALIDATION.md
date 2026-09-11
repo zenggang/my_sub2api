@@ -4,7 +4,7 @@
 
 ## 代码与离线验证
 
-- HEAD：`2f653d5e4`（已推送到 `origin/design/attestation-forwarding`）。
+- HEAD：`e9d5bc221`（已推送到 `origin/design/attestation-forwarding`）。
 - `go test ./...`：通过。
 - 前端 `pnpm build`：通过。
 - Linux amd64：`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath`，通过。
@@ -37,3 +37,13 @@
 API Key smoke 证明候选在 `all` 配置下的 HTTP Responses、模型映射、工具续聊和正式实例隔离行为；它没有产生真实 Codex Desktop 的 Apple DeviceCheck 证明，也没有证明上游接受任意伪造的 `x-oai-attestation`。真实 Desktop HTTP、compact、原生 WS 和 WS→HTTP bridge 仍需用签名 Desktop 产生的实际证明做一次受控 E2E。
 
 正式部署和向官方提交 PR 均未执行。
+
+## 官方 CLI 观测
+
+使用 `/Applications/ChatGPT.app/Contents/Resources/codex`（`codex-cli 0.153.4`，本机 ChatGPT 登录状态）通过 SSH 隧道访问 118 候选 18081，候选设置为 `mode=observe`。请求返回 HTTP 200；候选 Info 日志记录：
+
+```text
+openai_attestation_observed transport=http target=codex present=false value_count=0
+```
+
+这证明当前 bundled Codex CLI 路径没有产生 `x-oai-attestation`。它不是签名 Codex Desktop，因此不能作为 DeviceCheck E2E；该请求只用于确认“无证明”路径和观测字段。候选已停止，正式实例 SHA `9378ba6d…2020b`、PID `25190` 保持不变。
