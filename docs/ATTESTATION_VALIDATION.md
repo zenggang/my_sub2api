@@ -57,3 +57,7 @@ present=true value_count=1 length=2987 malformed=false v=1 s=0
 ```
 
 该真实证明请求在候选上返回 HTTP 200。随后将候选切为 `mode=all`，用同一官方 app-server + DeviceCheck provider 再执行一次，turn 状态为 `completed`，上游请求返回 HTTP 200。候选二进制 SHA-256 为 `8a1211943255380b53bf503344915ace811bd3a1c0453032b688ad4340d1e706`；正式实例仍为 SHA `9378ba6d…2020b`、PID `25190`。这是 HTTP 主链路的真实 DeviceCheck provider 级 E2E；没有把 token 写入日志或文档。
+
+## 原生 WS 旁路结果
+
+继续让官方 app-server 声明 `supports_websockets=true`，并用同一真实 DeviceCheck provider 尝试原生 WS。候选收到下游 WebSocket 握手（HTTP 101），app-server 共响应了 8 次 attestation 生成请求；但 118 当前 API Key 分组的 5 个候选账号全部被 WS 能力/调度过滤，未建立上游 WS，客户端按既有策略重试 5 次后回退 HTTP，最终 `response.completed` 成功。该结果是环境账号能力门禁，不能归因于 attestation 代码失败；原生 WS 的 scope/pool 行为仍以离线 pool 测试为主要证据，待有可用 WS 账号时再做真实上游 WS E2E。
