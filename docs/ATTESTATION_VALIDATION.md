@@ -4,7 +4,7 @@
 
 ## 代码与离线验证
 
-- 源码 HEAD：`6f219544d`（已推送到 `origin/design/attestation-forwarding`）。当前源码候选二进制对应功能实现提交：`4093453d4`；其后的提交只增加了验证材料，未改变 HTTP/WS 转发核心。
+- 源码 HEAD：`9f6636cdd`（已推送到 `origin/design/attestation-forwarding`）。当前源码候选二进制对应功能实现提交：`4093453d4`；其后的提交只增加了验证材料，未改变 HTTP/WS 转发核心。
 - `go test ./...`：通过。
 - 前端 `pnpm build`：通过。
 - Linux amd64：`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath`，通过。
