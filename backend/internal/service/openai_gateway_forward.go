@@ -1520,6 +1520,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
+	if err := s.applyOpenAIAttestationHTTPForwarding(c, req, account, targetURL); err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 

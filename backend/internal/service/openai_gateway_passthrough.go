@@ -731,6 +731,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
+	if err := s.applyOpenAIAttestationHTTPForwarding(c, req, account, targetURL); err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 

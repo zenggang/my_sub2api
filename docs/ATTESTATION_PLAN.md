@@ -1,6 +1,6 @@
 # Codex `x-oai-attestation` 适配方案
 
-状态：方案评审分支。当前分支为 `design/attestation-forwarding`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。本分支只交付方案，不包含实现代码、生产配置、账号变更、候选部署或官方 PR。
+状态：HTTP 第一阶段开发中。当前分支为 `design/attestation-forwarding`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。本阶段只实现全局 mode、HTTP/compact 透传和定向测试；WS、bridge、生产配置、账号变更、候选部署和官方 PR 不在本阶段。
 
 ## 1. 目标与边界
 
