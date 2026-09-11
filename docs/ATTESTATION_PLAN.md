@@ -1,6 +1,6 @@
 # Codex `x-oai-attestation` 适配方案
 
-状态：HTTP、原生 WS 作用域隔离和 WS→HTTP bridge 代码已完成，默认仍为 `off`。当前分支为 `design/attestation-forwarding`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。已完成离线单元/集成测试、Linux amd64 候选构建和 118/18081 API-key smoke；真实 Desktop DeviceCheck 入站证明、正式部署和官方 PR 尚未执行。
+状态：HTTP、原生 WS 作用域隔离和 WS→HTTP bridge 代码已完成，默认仍为 `off`。当前分支为 `design/attestation-forwarding`，最新源码 `4093453d4`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。已完成离线单元/集成测试、当前源码 Linux amd64 候选构建、118/18081 API-key smoke，以及当前源码通过官方 app-server + ChatGPT.app DeviceCheck provider 的真实 HTTP E2E；正式部署和官方 PR 尚未执行。原生 WS 已验证入站握手和生成请求，但当前账号池没有可用上游 WS 账号，WS 上游复用/转发仍保留为环境受限项。
 
 ## 1. 目标与边界
 
@@ -165,7 +165,7 @@ compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游�
 
 先用 18081 候选，不切正式服务。HTTP 阶段候选只验证当前 HTTP 路径；WS/bridge 候选另行执行，不能因为 HTTP 候选通过就宣称 WS 适配完成。候选与线上共用 DB/Redis 时，必须关闭或隔离 prewarm、账号状态写入和调度缓存更新；如果无法证明候选只读/隔离，则不能用线上共享 DB/Redis 做 attestation 验证。仍先做迁移门禁和 active request 检查。
 
-当前实现状态：阶段 1 的 HTTP helper 已接入 managed/passthrough/compact 构造点；阶段 2 已将证明上下文与通用 WS Headers 分离，并让 scope、证明摘要贯穿连接池的 preferred/pinned/routing/least-busy 选择，带证明连接不进入账号级 prewarm；阶段 3 的 bridge 继续复用 HTTP helper，仅在 `all` 模式转发。证明相关 malformed 请求不会进入 failover；OAuth 认证/风控 401/403 立即停止换号，其他失败在已完成一次换号后停止继续尝试。已在 118 独立 18081 候选以 API Key `id=34` 完成五模型工具调用/续聊 smoke；该 smoke 没有真实 Desktop 证明，不能替代 DeviceCheck E2E。
+当前实现状态：阶段 1 的 HTTP helper 已接入 managed/passthrough/compact 构造点；阶段 2 已将证明上下文与通用 WS Headers 分离，并让 scope、证明摘要贯穿连接池的 preferred/pinned/routing/least-busy 选择，带证明连接不进入账号级 prewarm；阶段 3 的 bridge 继续复用 HTTP helper，仅在 `all` 模式转发。证明相关 malformed 请求不会进入 failover；OAuth 认证/风控 401/403 立即停止换号，其他失败在已完成一次换号后停止继续尝试。已在 118 独立 18081 候选以 API Key `id=34` 完成五模型工具调用/续聊 smoke；另用当前源码候选和官方 app-server + DeviceCheck provider 完成真实 HTTP E2E。API Key smoke 本身不生成 DeviceCheck 证明，不能替代后者。
 
 ## 6. 测试矩阵
 
