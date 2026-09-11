@@ -83,6 +83,8 @@ git merge main
 
 ## 5. 发布边界
 
+编译、打包、上传、候选验证、正式部署和回滚统一使用 [打包部署操作手册](RELEASING.md)，执行记录采用 [发布记录模板](RELEASE_RECORD_TEMPLATE.md)。机器路径、实际工具入口与历史校验值在本地 `docs-local/DEPLOYMENT_PROFILE.md`，不再每次临时寻找构建或切换方案。
+
 `release` 表示我们的集成代码线，不意味着每次提交都发布到服务器。部署和发布 tag 按用户的发布指令单独执行，并保留源码 SHA、构建 SHA、测试、候选验收和回滚记录。
 
 仓库继承的发布 Action 监听 `v*` tag 和手动触发。普通分支推送可能启动 CI；创建 Git 分支不等于创建发布 tag。本工作流不修改这些 Action 的触发条件。

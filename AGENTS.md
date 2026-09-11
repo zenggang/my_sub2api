@@ -2,6 +2,8 @@
 
 This fork follows [docs/FORK_WORKFLOW.md](docs/FORK_WORKFLOW.md). Read it before changing branches, implementing changes, syncing upstream, or preparing a contribution.
 
+Before compiling a release binary, packaging, staging, validating a candidate, deploying, or rolling back, read [docs/RELEASING.md](docs/RELEASING.md) and the local `docs-local/DEPLOYMENT_PROFILE.md`. Reuse their established toolchain and commands; inspect only facts that can change (source SHA, tool compatibility, migrations, live SHA, active requests, and selected smoke credentials). Do not rediscover or invent a release procedure on each run. The currently documented legacy packager builds an official tag plus a pinned patch, not arbitrary fork `release` HEAD; never mislabel its output as a fork build. Record each run using [docs/RELEASE_RECORD_TEMPLATE.md](docs/RELEASE_RECORD_TEMPLATE.md). A missing local profile requires resolving deployment-specific values, not blocking ordinary development tests.
+
 ## Branch roles
 
 - `upstream` is `Wei-Shaw/sub2api`; `origin` is `zenggang/my_sub2api`.
