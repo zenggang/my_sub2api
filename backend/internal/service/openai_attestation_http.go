@@ -26,6 +26,10 @@ func (s *OpenAIGatewayService) applyOpenAIAttestationHTTPForwarding(c *gin.Conte
 		return nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.Gateway.OpenAIAttestation.Mode))
+	bridgeContext, _ := c.Get("openai_ws_http_bridge")
+	if bridge, ok := bridgeContext.(bool); ok && bridge && mode != config.OpenAIAttestationModeAll {
+		return nil
+	}
 	if mode == config.OpenAIAttestationModeObserve {
 		observeOpenAIAttestationHTTP(c, account, targetURL)
 		return nil

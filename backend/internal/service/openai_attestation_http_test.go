@@ -75,3 +75,14 @@ func TestOpenAIAttestationHTTPForwardingRejectsMalformedInput(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, chatgptCodexURL, nil)
 	require.Error(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, account, chatgptCodexURL))
 }
+
+func TestOpenAIAttestationHTTPModeDoesNotEnableWSBridge(t *testing.T) {
+	c := newAttestationHTTPTestContext(`{"v":1,"s":0}`)
+	c.Set("openai_ws_http_bridge", true)
+	req := httptest.NewRequest(http.MethodPost, chatgptCodexURL, nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeHTTP},
+	}}}
+	require.NoError(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, chatgptCodexURL))
+	require.Empty(t, req.Header.Get(openAIAttestationHeader))
+}
