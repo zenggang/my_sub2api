@@ -37,14 +37,14 @@ gateway:
 | --- | --- |
 | `off` | 不解析、不透传、不建立 attestation scope；现有请求路径保持旧行为 |
 | `observe` | 只做脱敏观测，不向上游发送该头 |
-| `http` | 透传 managed HTTP、passthrough、compact 和 WS→HTTP bridge；原生 WS 握手仍关闭 |
-| `all` | 在 `http` 基础上开启原生 WS 握手和连接池 scope 隔离 |
+| `http` | 只透传当前主链路的 managed HTTP、passthrough、compact；WS→HTTP bridge 和原生 WS 都保持旧行为 |
+| `all` | 在 `http` 基础上开启 WS→HTTP bridge、原生 WS 握手和连接池 scope 隔离 |
 
 安全默认值必须是 `off`。第一版不提供账号/分组例外和客户端自选开关；候选灰度通过独立候选实例或受控测试入口完成，不把生产配置切成每账号不同语义。
 
-开关要有全局 kill switch 语义：切回 `off` 只影响新建 HTTP attempt 和新建 WS 握手；已经建立的带证明上游 WS 不能热更新 Header。切换到 `off` 时应立即禁止 attested 连接进入公共池和 prewarm，并标记/排空已有 attested 连接；默认让已有活动流完成，显式强制关闭才中断活动流。这样开关关闭后不会继续产生新的证明外发，又不会把“配置已关闭”误报为存量连接已改变。
+开关要有全局 kill switch 语义：当前 HTTP 模式切回 `off` 立即影响新建 HTTP attempt；WS 尚未开启时不需要修改 WS 连接。未来 `all` 模式切回 `off` 时，新建 HTTP/WS attempt 都关闭；已经建立的带证明上游 WS 不能热更新 Header，应立即禁止进入公共池和 prewarm，并标记/排空已有 attested 连接；默认让已有活动流完成，显式强制关闭才中断活动流。这样开关关闭后不会继续产生新的证明外发，又不会把“配置已关闭”误报为存量连接已改变。
 
-实现上建议以配置文件的 `off` 作为启动默认和故障安全值，再用进程内原子 runtime snapshot 读取每个请求。若后续接入管理端热切换，持久化配置和 runtime snapshot 必须原子更新，reload 失败保持旧快照但告警；不能因为数据库/配置中心短暂不可读而自动变成 `all`。切换日志只记录旧/新 mode、操作者、时间和受影响的连接数，不记录证明原文。
+实现上建议以配置文件的 `off` 作为启动默认和故障安全值，再用进程内原子 runtime snapshot 读取每个请求。第一阶段只允许 `observe`→`http`→`off`，不启用 WS scope 和 pool 改造；WS 相关只在后续明确切到 `all` 时启用。若后续接入管理端热切换，持久化配置和 runtime snapshot 必须原子更新，reload 失败保持旧快照但告警；不能因为数据库/配置中心短暂不可读而自动变成 `all`。切换日志只记录旧/新 mode、操作者、时间和受影响的连接数，不记录证明原文。
 
 `cross_account_attempt_limit=1`、malformed 不 failover、证明相关 401/403 停止切号和 attested prewarm 禁止属于不可被普通账号/分组配置覆盖的安全硬规则；不把它们做成可随意调大的开关。
 
@@ -113,7 +113,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 0：只读观测
 
-先将全局 mode 设为 `observe`，不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、malformed 原因和出站是否一致。
+先将全局 mode 设为 `observe`，优先只观测当前 HTTP 路径，不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、malformed 原因和出站是否一致。
 
 观测要求：
 
@@ -125,7 +125,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 1：HTTP 原值透传
 
-将全局 mode 从 `observe` 切到 `http` 后，在最终目标已确定为 ChatGPT Codex Responses 的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。helper 必须硬检查最终 scheme、hostname、path、账号类型和 Responses 路径；判断依据不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
+将全局 mode 从 `observe` 切到 `http` 后，只在当前主链路的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。WS→HTTP bridge 暂不纳入这一阶段。helper 必须硬检查最终 scheme、hostname、path、账号类型和 Responses 路径；判断依据不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
 
 验收：
 
@@ -137,7 +137,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 2：原生 WS 握手和作用域
 
-将全局 mode 从 `http` 切到 `all` 后，`buildOpenAIWSHeaders` 接收当前下游 WS 连接的证明上下文和 `AttestationScope`。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断，并让 scope 贯穿所有池操作。
+WS 作为后续阶段：只有将全局 mode 从 `http` 切到 `all` 后，`buildOpenAIWSHeaders` 才接收当前下游 WS 连接的证明上下文和 `AttestationScope`。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断，并让 scope 贯穿所有池操作。
 
 建议先采用保守策略：
 
@@ -149,7 +149,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 3：WS→HTTP bridge
 
-bridge 的每个 HTTP turn 都从下游 WS 连接作用域取得证明上下文。首版不尝试让 Sub2API 向 Desktop 请求刷新证明，也不把证明塞进 `response.create` payload。
+bridge 的每个 HTTP turn 都从下游 WS 连接作用域取得证明上下文。它和原生 WS 一样属于后续 `all` 阶段，第一阶段 `http` 不修改 bridge。首版不尝试让 Sub2API 向 Desktop 请求刷新证明，也不把证明塞进 `response.create` payload。
 
 compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游连接关闭、failover 终止或 bridge session 清理时同时清理 scope 和证明上下文，不把它留在连接池或全局 context。metrics 不使用原始 scope 作为无限 cardinality 标签，使用受限 transport/状态枚举。
 
@@ -163,13 +163,14 @@ compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游�
 
 ### 阶段 4：候选和正式验收
 
-先用 18081 候选，不切正式服务。候选与线上共用 DB/Redis 时，必须关闭或隔离 prewarm、账号状态写入和调度缓存更新；如果无法证明候选只读/隔离，则不能用线上共享 DB/Redis 做 attestation 验证。仍先做迁移门禁和 active request 检查。
+先用 18081 候选，不切正式服务。HTTP 阶段候选只验证当前 HTTP 路径；WS/bridge 候选另行执行，不能因为 HTTP 候选通过就宣称 WS 适配完成。候选与线上共用 DB/Redis 时，必须关闭或隔离 prewarm、账号状态写入和调度缓存更新；如果无法证明候选只读/隔离，则不能用线上共享 DB/Redis 做 attestation 验证。仍先做迁移门禁和 active request 检查。
 
 ## 6. 测试矩阵
 
 ### 单元和构造器测试
 
 - `off`、`observe`、`http`、`all` 四种 mode 的路由矩阵；默认配置和 reload 失败都保持 `off`/旧快照，不得意外开启透传。
+- `http` 模式只影响当前 HTTP 主链路；WS/bridge 仍保持旧行为。
 - 从 `all` 切回 `off` 后，新请求不再透传，已有 attested WS 被禁止复用和 prewarm，活动流按 drain 语义处理。
 - managed HTTP、passthrough HTTP、compact：有/无证明，原值、状态和长度一致。
 - `s=0/1/2/3/4`、未知状态、重复 header、超长值、异常字符。
@@ -240,9 +241,9 @@ attestation_transport
 1. 用户评审本方案，确认是否允许阶段 0 观测。
 2. 先定稿 P0 合同：证明上下文与 `Headers/lastAcquire` 分离，downstream scope 全池传递，带证明连接不跨 scope prewarm。
 3. 阶段 0 只读证据达到：至少一批真实 Desktop 请求明确区分有头/无头、HTTP/WS 路径和最终 attempt，并能在可控出口证明外发结果。
-4. 实现阶段 1，完成目标硬门禁、malformed 确定性错误和构造器隔离测试。
-5. 实现阶段 2～3，完成连接池/prewarm/bridge 测试和跨账号一次上限。
-6. 使用真实 Desktop 做隔离候选 E2E；通过后才讨论是否部署。共享 DB/Redis 无法隔离时停止候选。
+4. 实现阶段 1，完成目标硬门禁、malformed 确定性错误和 HTTP 构造器隔离测试；先只在 `http` 模式候选验证和评审。
+5. HTTP 候选通过后，才把 WS→HTTP bridge 和原生 WS 作为后续任务，切换 `all` 前单独完成连接池/prewarm/bridge 测试和跨账号一次上限。
+6. 使用真实 Desktop 做与当前阶段匹配的隔离候选 E2E；通过后才讨论是否部署。共享 DB/Redis 无法隔离时停止候选。
 7. 每阶段失败都保留候选和测试日志，回退代码提交，不修改账号配置来掩盖问题。
 
 完成标准不是“header 已加入白名单”，而是：真实入站证明在目标路径原值到达上游；无证明和无关目标不被污染；WS 连接不跨作用域复用；账号切换风险有可观测证据；业务终态和上游归因可回查。
