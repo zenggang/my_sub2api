@@ -6,6 +6,11 @@
 
 ## 0. 固定入口与当前支持范围
 
+2026-09-12 新增 fork 构建与发布入口：[ops/fork-release](../ops/fork-release/README.md)。
+从干净且已推送的 `release` 构建冻结源码包，执行具名测试，校验全部 live SQL
+迁移后才允许候选启动；部署时一起备份/恢复 HTTP attestation drop-in。
+下文 `prepare.py` 和旧远端 CLI 仍仅适用于官方 tag＋Lite 补丁，不能混用包格式。
+
 具体机器、目录和版本值从本地 `docs-local/DEPLOYMENT_PROFILE.md` 取得。该文件由 Git 忽略，只保存非敏感定位信息；凭据仍留在运行环境。
 
 | 操作 | 固定入口 | 实际边界 |
