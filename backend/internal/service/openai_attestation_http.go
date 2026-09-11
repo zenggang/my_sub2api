@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -119,7 +120,22 @@ func observeOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL st
 	values := incomingOpenAIAttestationValues(c.Request.Header)
 	fields := []any{"transport", "http", "target", "codex", "present", len(values) > 0, "value_count", len(values)}
 	if len(values) == 1 {
-		fields = append(fields, "length", len(values[0]), "malformed", validateOpenAIAttestationValue(values[0]) != nil)
+		malformed := validateOpenAIAttestationValue(values[0]) != nil
+		fields = append(fields, "length", len(values[0]), "malformed", malformed)
+		if !malformed {
+			var envelope struct {
+				Version *int `json:"v"`
+				Status  *int `json:"s"`
+			}
+			if err := json.Unmarshal([]byte(values[0]), &envelope); err == nil {
+				if envelope.Version != nil {
+					fields = append(fields, "v", *envelope.Version)
+				}
+				if envelope.Status != nil {
+					fields = append(fields, "s", *envelope.Status)
+				}
+			}
+		}
 	}
 	slog.Debug("openai_attestation_observed", fields...)
 }
