@@ -68,13 +68,16 @@ func (s *OpenAIGatewayService) applyOpenAIAttestationHTTPForwarding(c *gin.Conte
 		return nil
 	}
 	if len(values) != 1 {
+		logOpenAIAttestationHTTP(c, account, targetURL, values, false, true)
 		return fmt.Errorf("malformed %s: duplicate values", openAIAttestationHeader)
 	}
 	value := values[0]
 	if err := validateOpenAIAttestationValue(value); err != nil {
+		logOpenAIAttestationHTTP(c, account, targetURL, values, false, true)
 		return err
 	}
 	req.Header.Set(openAIAttestationHeader, value)
+	logOpenAIAttestationHTTP(c, account, targetURL, values, true, false)
 	return nil
 }
 
@@ -118,11 +121,20 @@ func observeOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL st
 		return
 	}
 	values := incomingOpenAIAttestationValues(c.Request.Header)
+	logOpenAIAttestationHTTP(c, account, targetURL, values, false, len(values) != 1 && len(values) > 0)
+}
+
+// logOpenAIAttestationHTTP records only safe forwarding metadata. The opaque
+// token and any stable digest are deliberately excluded from production logs.
+func logOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL string, values []string, forwarded, malformed bool) {
+	if c == nil || c.Request == nil || account == nil || !isOpenAIAttestationCodexTarget(targetURL) || len(values) == 0 {
+		return
+	}
 	fields := []any{"transport", "http", "target", "codex", "present", len(values) > 0, "value_count", len(values)}
 	if len(values) == 1 {
-		malformed := validateOpenAIAttestationValue(values[0]) != nil
-		fields = append(fields, "length", len(values[0]), "malformed", malformed)
-		if !malformed {
+		valueMalformed := validateOpenAIAttestationValue(values[0]) != nil
+		fields = append(fields, "length", len(values[0]), "malformed", malformed || valueMalformed, "forwarded", forwarded)
+		if !valueMalformed {
 			var envelope struct {
 				Version *int `json:"v"`
 				Status  *int `json:"s"`
@@ -136,11 +148,13 @@ func observeOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL st
 				}
 			}
 		}
+	} else {
+		fields = append(fields, "malformed", malformed, "forwarded", false)
 	}
-	// Observation is intentionally emitted at Info: the staged observe mode is
-	// the evidence path, and production defaults to off so this does not create
-	// a normal-request log stream. The fields contain no opaque proof material.
-	slog.Info("openai_attestation_observed", fields...)
+	if requestID := c.GetString("request_id"); requestID != "" {
+		fields = append(fields, "request_id", requestID)
+	}
+	slog.Info("openai_attestation_forwarding", fields...)
 }
 
 func isOpenAIAttestationCodexTarget(rawURL string) bool {
