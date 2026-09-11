@@ -1,6 +1,6 @@
 # Codex `x-oai-attestation` 适配方案
 
-状态：HTTP、原生 WS 作用域隔离和 WS→HTTP bridge 代码已完成，默认仍为 `off`。当前分支为 `design/attestation-forwarding`，最新源码 `4093453d4`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。已完成离线单元/集成测试、当前源码 Linux amd64 候选构建、118/18081 API-key smoke，以及当前源码通过官方 app-server + ChatGPT.app DeviceCheck provider 的真实 HTTP E2E；正式部署和官方 PR 尚未执行。原生 WS 已在当前源码候选验证入站握手、真实证明生成和 HTTP 回退，但当前账号池没有可用上游 WS 账号，WS 上游复用/转发仍保留为环境受限项。
+状态：HTTP、原生 WS 作用域隔离和 WS→HTTP bridge 代码已完成，默认仍为 `off`。当前分支为 `design/attestation-forwarding`，最新提交 `6f219544d`，功能实现提交 `4093453d4`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。已完成离线单元/集成测试、当前源码 Linux amd64 候选构建、118/18081 API-key smoke，以及当前源码通过官方 app-server + ChatGPT.app DeviceCheck provider 的真实 HTTP E2E；正式部署和官方 PR 尚未执行。原生 WS 已在当前源码候选验证入站握手、真实证明生成和 HTTP 回退，但当前账号池没有可用上游 WS 账号，WS 上游复用/转发仍保留为环境受限项。
 
 ## 1. 目标与边界
 
