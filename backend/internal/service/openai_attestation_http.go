@@ -151,7 +151,11 @@ func logOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL string
 	} else {
 		fields = append(fields, "malformed", malformed, "forwarded", false)
 	}
-	if requestID := c.GetString("request_id"); requestID != "" {
+	requestID := c.GetString("request_id")
+	if requestID == "" {
+		requestID = c.GetHeader("x-client-request-id")
+	}
+	if requestID != "" {
 		fields = append(fields, "request_id", requestID)
 	}
 	slog.Info("openai_attestation_forwarding", fields...)
