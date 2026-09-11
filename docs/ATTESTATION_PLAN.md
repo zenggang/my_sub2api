@@ -1,6 +1,6 @@
 # Codex `x-oai-attestation` 适配方案
 
-状态：HTTP 第一阶段开发中。当前分支为 `design/attestation-forwarding`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。本阶段只实现全局 mode、HTTP/compact 透传和定向测试；WS、bridge、生产配置、账号变更、候选部署和官方 PR 不在本阶段。
+状态：HTTP、原生 WS 作用域隔离和 WS→HTTP bridge 代码已完成，默认仍为 `off`。当前分支为 `design/attestation-forwarding`，基于 `release` `5f3bfd119a9107a43669f47c5183963b6c2bb707`。已完成离线单元/集成测试和 Linux amd64 候选构建；真实 Desktop 入站观测、18081 隔离候选 E2E、正式部署和官方 PR 尚未执行。
 
 ## 1. 目标与边界
 
@@ -44,7 +44,7 @@ gateway:
 
 开关要有全局 kill switch 语义：当前 HTTP 模式切回 `off` 立即影响新建 HTTP attempt；WS 尚未开启时不需要修改 WS 连接。未来 `all` 模式切回 `off` 时，新建 HTTP/WS attempt 都关闭；已经建立的带证明上游 WS 不能热更新 Header，应立即禁止进入公共池和 prewarm，并标记/排空已有 attested 连接；默认让已有活动流完成，显式强制关闭才中断活动流。这样开关关闭后不会继续产生新的证明外发，又不会把“配置已关闭”误报为存量连接已改变。
 
-实现上建议以配置文件的 `off` 作为启动默认和故障安全值，再用进程内原子 runtime snapshot 读取每个请求。第一阶段只允许 `observe`→`http`→`off`，不启用 WS scope 和 pool 改造；WS 相关只在后续明确切到 `all` 时启用。若后续接入管理端热切换，持久化配置和 runtime snapshot 必须原子更新，reload 失败保持旧快照但告警；不能因为数据库/配置中心短暂不可读而自动变成 `all`。切换日志只记录旧/新 mode、操作者、时间和受影响的连接数，不记录证明原文。
+实现上以配置文件的 `off` 作为启动默认和故障安全值；当前请求读取配置快照，尚未提供管理端热切换。`observe` 和 `http` 只影响 HTTP，`all` 才启用 WS 证明作用域。若后续接入管理端热切换，持久化配置和 runtime snapshot 必须原子更新，reload 失败保持旧快照但告警；不能因为数据库/配置中心短暂不可读而自动变成 `all`。切换日志只记录旧/新 mode、操作者、时间和受影响的连接数，不记录证明原文。
 
 `cross_account_attempt_limit=1`、malformed 不 failover、证明相关 401/403 停止切号和 attested prewarm 禁止属于不可被普通账号/分组配置覆盖的安全硬规则；不把它们做成可随意调大的开关。
 
@@ -164,6 +164,8 @@ compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游�
 ### 阶段 4：候选和正式验收
 
 先用 18081 候选，不切正式服务。HTTP 阶段候选只验证当前 HTTP 路径；WS/bridge 候选另行执行，不能因为 HTTP 候选通过就宣称 WS 适配完成。候选与线上共用 DB/Redis 时，必须关闭或隔离 prewarm、账号状态写入和调度缓存更新；如果无法证明候选只读/隔离，则不能用线上共享 DB/Redis 做 attestation 验证。仍先做迁移门禁和 active request 检查。
+
+当前实现状态：阶段 1 的 HTTP helper 已接入 managed/passthrough/compact 构造点；阶段 2 已将证明上下文与通用 WS Headers 分离，并让 scope、证明摘要贯穿连接池的 preferred/pinned/routing/least-busy 选择，带证明连接不进入账号级 prewarm；阶段 3 的 bridge 继续复用 HTTP helper，仅在 `all` 模式转发。当前尚未把 `all` 配置切到 118，也未以伪造证明替代真实 Desktop 做候选验收。
 
 ## 6. 测试矩阵
 
