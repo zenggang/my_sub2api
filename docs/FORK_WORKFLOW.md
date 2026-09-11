@@ -93,4 +93,16 @@ git merge main
 
 2026-09-11，`release` 从已核对的本地 `main`（`4726bdd08b6201d426a80529b79be123a4008d20`）创建。工作流文档和根目录 `AGENTS.md` 在从 `release` 拉出的 `chore/fork-workflow` 上编写，验证后合入 `release`；`main` 保持官方代码。
 
-建立分支不等于导入已在线运行的 Lite→5.5 私有补丁，也不等于实现设备证明适配。这两项后续分别按开发流程处理。与运行环境相关的既有分析保存在被 Git 忽略的 `docs-local/`。
+建立分支时尚未导入 Lite→5.5 私有补丁，也未实现设备证明适配；后续进度以集成记录为准。与运行环境相关的既有分析保存在被 Git 忽略的 `docs-local/`。
+
+## 自有改造集成记录
+
+2026-09-11：从 `release` 的 `a15019e86` 创建 `fix/gpt55-lite-compat`，迁入已验证的 lite55.2 兼容代码；独立代码提交为 `26357488c81dcdf13a1f9d00a05d3ba7da11948c`。
+
+- 在普通 HTTP、passthrough 和 WS→HTTP 桥接的最终出站处，按实际 OAuth/setup-token 模型为 `gpt-5.5` 且携带 Lite 标记判断，移除 Lite header 及相应 client_metadata。
+- 保留工具、namespace、历史、reasoning.context 和入站请求；不修改账号映射，不限制来源模型或设账号编号例外。原生非 5.5 请求保留原 Lite 行为。
+- 五个代码/测试文件与历史 lite55.2 补丁一致，补丁反向应用检查通过；本次没有新增数据库迁移、前端、部署或 attestation 改动。
+- 当前 fork 基线上的定向 `go test -tags=unit` 为 44 个顶层用例、94 个通过项（含子用例），零失败、零跳过。已确认两个 GPT-5.5 必要用例、OAuth Lite normalization 和原生 Lite header 保留用例实际执行。
+- 普通无标签定向测试也通过，但不包含带 `//go:build unit` 的 Lite 用例，不能替代上述验证。固定命令见 [RELEASING.md](RELEASING.md)。
+
+此记录代表代码集成验证，不是新 fork 版本已部署，也不表示已向官方提交 PR。

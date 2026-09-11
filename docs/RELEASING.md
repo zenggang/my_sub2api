@@ -85,6 +85,20 @@ env -u GOROOT -u GOOS -u GOARCH \
 
 当前必要回归为 `TestMappedGPT55*`、`TestOpenAIGatewayServiceForward_NormalizesResponsesLiteToolsForOAuth`、`TestProxyOpenAIWSHTTPBridgeTurn*`。wrapper 还检查两个必要测试名称确实出现在通过事件中。退出码 0 但未跑到目标测试不是通过。新增功能需要扩展对应测试，旧 Lite 用例不能证明新功能正确。
 
+2026-09-11 在 fork 集成 lite55.2 时确认：`openai_responses_lite_tools_test.go` 带 `//go:build unit`，现有旧 wrapper 的无标签测试不执行其中的用例。对 fork 的代码集成，必须另外执行下面的定向回归，并核对目标测试名称实际出现。命令在本 fork 根目录运行，GO_BIN 使用部署档案中的已 export 路径：
+
+```bash
+(
+  set -e
+  cd backend
+  env -u GOROOT -u GOOS -u GOARCH "${GO_BIN:?}" test -tags=unit ./internal/service \
+    -run 'TestMappedGPT55|TestNormalizeOpenAIResponsesLite|TestApplyCodexOAuthTransform_PreservesLiteNamespaceToolChoice|TestOpenAIGatewayServiceForward_.*ResponsesLite|TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsResponsesLiteHeader|TestProxyOpenAIWSHTTPBridgeTurn' \
+    -count=1 -json
+)
+```
+
+该步骤验证 fork 代码，不改变旧 wrapper 的源码来源，也不能把由旧 wrapper 生成的官方 tag＋补丁二进制标为 fork HEAD 的发布包。
+
 ## 2. 打包方式
 
 编译成功后的候选目录是部署单位，禁止只拿一个不明来源的 `sub2api` 文件替换线上。
