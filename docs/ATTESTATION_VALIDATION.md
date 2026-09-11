@@ -4,11 +4,11 @@
 
 ## 代码与离线验证
 
-- 源码验证基线：功能实现提交 `4093453d4`（已推送到 `origin/design/attestation-forwarding`）；其后的提交只增加了验证材料，未改变 HTTP/WS 转发核心。
+- 源码验证基线：功能实现提交 `18ec88ee3`（已推送到 `origin/design/attestation-forwarding`）；此前 `4093453d4` 为首个转发实现，`18ec88ee3` 增加大小写无关的 attestation 清理和 override 禁止名单。
 - `go test ./...`：通过。
 - 前端 `pnpm build`：通过。
 - Linux amd64：`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath`，通过。
-- 当前源码本地候选二进制 SHA-256：`7abc13e4af8f220881a46effa5b0a3093362fb5b03c9878e7f92cb0eeaaf8387`。
+- 当前修复候选二进制 SHA-256：`03cffee7f292396946a29aacc166829ca29c8b25553807f8bcfab6abf324aa84`。
 
 ## 118 隔离候选
 
@@ -33,6 +33,8 @@
 本轮再次使用 `gang.zeng1@zhaogang.com` 名下 API Key（内部 ID `34`）复验候选 `2f653d5e4`，启动时设置 `GATEWAY_OPENAI_ATTESTATION_MODE=all`，候选只监听 `127.0.0.1:18081`。五个模型均完成两轮 `response.completed`，第一轮工具调用和第二轮 `hello` 续聊通过；候选随后自动停止。复验后 `sub2api-attestation-canary.service` 为 inactive/unknown、18081 已释放，正式实例仍为 SHA `9378ba6d…`、PID `25190`，`18080/health` 返回 `{"status":"ok"}`。
 
 随后用当前源码候选 `4093453d4`（二进制 SHA-256 `7abc13e4af8f220881a46effa5b0a3093362fb5b03c9878e7f92cb0eeaaf8387`）重复隔离验证，结果相同：五个模型十轮请求全部完成。该候选使用相同的 `all` 模式，仅监听 `127.0.0.1:18081`，未替换正式二进制。
+
+加入大小写无关清理修复后，用候选 `18ec88ee3`（二进制 SHA-256 `03cffee7f292396946a29aacc166829ca29c8b25553807f8bcfab6abf324aa84`）再次执行同一五模型十轮 smoke，全部 `response.completed`；候选随后自动停止，正式实例未替换。
 
 本次候选与正式实例共用运行环境中的 DB/Redis；候选未切换正式服务、未替换正式二进制。启动时正式实例存在活动请求，因此没有使用 `--allow-active` 或重启正式服务；候选仅绑定 18081，验证后立即停止。正式部署仍需独立的活动请求和迁移门禁。
 
@@ -60,8 +62,8 @@ openai_attestation_observed transport=http target=codex present=false value_coun
 present=true value_count=1 length=2987 malformed=false v=1 s=0
 ```
 
-该真实证明请求在旧候选上返回 HTTP 200。随后在当前源码候选 `4093453d4`、`mode=all` 下，用同一官方 app-server + DeviceCheck provider 执行一次完整 turn：app-server 收到 1 次 `attestation/generate`，候选返回 `turn/completed`，上游请求返回 HTTP 200。证明值只在 provider、JSON-RPC 响应和当前出站请求内存中短暂存在，没有写入日志或文档；正式实例仍为 SHA `9378ba6d…2020b`、PID `25190`，候选结束后 18081 已释放。这是当前源码 HTTP 主链路的真实 DeviceCheck provider 级 E2E。
+该真实证明请求在旧候选上返回 HTTP 200。随后在修复候选 `18ec88ee3`、`mode=all` 下，用同一官方 app-server + DeviceCheck provider 执行一次完整 turn：app-server 收到 1 次 `attestation/generate`，候选返回 `turn/completed`，上游请求返回 HTTP 200。证明值只在 provider、JSON-RPC 响应和当前出站请求内存中短暂存在，没有写入日志或文档；正式实例仍为 SHA `9378ba6d…2020b`、PID `25190`，候选结束后 18081 已释放。这是当前修复源码 HTTP 主链路的真实 DeviceCheck provider 级 E2E。
 
 ## 原生 WS 旁路结果
 
-继续让官方 app-server 声明 `supports_websockets=true`，并用同一真实 DeviceCheck provider 在当前源码候选上尝试原生 WS。候选收到下游 WebSocket 握手（HTTP 101），app-server 共响应了 8 次 attestation 生成请求；118 日志明确显示 `openai.websocket_ingress_started`，随后当前分组的 4 个候选账号均因不支持该模型的 WS 能力被过滤，未建立上游 WS。客户端按既有策略重试后回退 HTTP，最终 `turn/completed`，正式实例仍未被切换。该结果是环境账号能力门禁，不能归因于 attestation 代码失败；原生 WS 的 scope/pool 行为仍以离线 pool 测试为主要证据，待有可用 WS 账号时再做真实上游 WS E2E。
+继续让官方 app-server 声明 `supports_websockets=true`，并用修复候选 `18ec88ee3` 和同一真实 DeviceCheck provider 尝试原生 WS。候选收到下游 WebSocket 握手（HTTP 101），app-server 共响应了 8 次 attestation 生成请求；118 日志明确显示 `openai.websocket_ingress_started`，随后当前分组的 4 个候选账号均因不支持该模型的 WS 能力被过滤，未建立上游 WS。客户端按既有策略重试后回退 HTTP，最终 `turn/completed`，正式实例仍未被切换。该结果是环境账号能力门禁，不能归因于 attestation 代码失败；原生 WS 的 scope/pool 行为仍以离线 pool 测试为主要证据，待有可用 WS 账号时再做真实上游 WS E2E。
