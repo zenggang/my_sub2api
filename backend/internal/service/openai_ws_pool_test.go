@@ -2115,17 +2115,24 @@ func TestOpenAIWSPool_AttestationScopeIsolatedAndRawValueIsNotPrewarmed(t *testi
 	require.True(t, second.Reused(), "same downstream scope should reuse its own connection")
 	second.Release()
 
+	changedProof := base
+	changedProof.Attestation.Value = `{"v":1,"s":0,"t":"v1.scope-a-rotated"}`
+	rotated, err := pool.Acquire(context.Background(), changedProof)
+	require.NoError(t, err)
+	require.False(t, rotated.Reused(), "a changed proof must force a fresh handshake even within one scope")
+	rotated.Release()
+
 	other := base
 	other.Attestation.Scope = "scope-b"
 	third, err := pool.Acquire(context.Background(), other)
 	require.NoError(t, err)
 	require.False(t, third.Reused(), "different downstream scope must not reuse the attested connection")
 	third.Release()
-	require.Len(t, dialer.Headers(), 2)
+	require.Len(t, dialer.Headers(), 3)
 
 	pool.ensureTargetIdleAsync(account.ID)
 	time.Sleep(20 * time.Millisecond)
-	require.Len(t, dialer.Headers(), 2, "attested lastAcquire must not trigger raw-proof prewarm")
+	require.Len(t, dialer.Headers(), 3, "attested lastAcquire must not trigger raw-proof prewarm")
 }
 
 func (d *openAIWSFakeDialer) Dial(

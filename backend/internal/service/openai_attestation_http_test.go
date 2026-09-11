@@ -86,3 +86,41 @@ func TestOpenAIAttestationHTTPModeDoesNotEnableWSBridge(t *testing.T) {
 	require.NoError(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, chatgptCodexURL))
 	require.Empty(t, req.Header.Get(openAIAttestationHeader))
 }
+
+func TestOpenAIAttestationAllModeEnablesWSBridgeHTTPTurn(t *testing.T) {
+	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.bridge"}`)
+	c.Set("openai_ws_http_bridge", true)
+	req := httptest.NewRequest(http.MethodPost, chatgptCodexURL, nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeAll},
+	}}}
+	require.NoError(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, chatgptCodexURL))
+	require.Equal(t, `{"v":1,"s":0,"t":"v1.bridge"}`, req.Header.Get(openAIAttestationHeader))
+}
+
+func TestOpenAIAttestationWSValidationUsesAllModeAndOAuthGate(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeAll},
+	}}
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	require.NoError(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{}))
+	require.NoError(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{
+		openAIAttestationHeader: []string{`{"v":1,"s":0,"t":"v1.test"}`},
+	}))
+	require.Error(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{
+		openAIAttestationHeader: []string{"one", "two"},
+	}))
+	require.Error(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{
+		openAIAttestationHeader: []string{"bad\x00value"},
+	}))
+	// API-key and non-all modes remain outside the attestation contract.
+	require.NoError(t, validateOpenAIAttestationForWS(cfg, apiKey, http.Header{
+		openAIAttestationHeader: []string{"bad\x00value", "second"},
+	}))
+	cfg.Gateway.OpenAIAttestation.Mode = config.OpenAIAttestationModeHTTP
+	require.NoError(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{
+		openAIAttestationHeader: []string{"bad\x00value", "second"},
+	}))
+}

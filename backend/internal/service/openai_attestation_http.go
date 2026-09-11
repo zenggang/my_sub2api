@@ -96,3 +96,21 @@ func validateOpenAIAttestationValue(value string) error {
 	}
 	return nil
 }
+
+// validateOpenAIAttestationForWS applies the same hard gate as HTTP before a
+// WebSocket handshake is attempted. The raw value is deliberately not copied
+// into the reusable handshake header map; callers materialize it only for the
+// individual dial.
+func validateOpenAIAttestationForWS(cfg *config.Config, account *Account, headers http.Header) error {
+	if cfg == nil || !strings.EqualFold(strings.TrimSpace(cfg.Gateway.OpenAIAttestation.Mode), config.OpenAIAttestationModeAll) || account == nil || !account.IsOpenAIOAuthLike() {
+		return nil
+	}
+	values := incomingOpenAIAttestationValues(headers)
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) != 1 {
+		return fmt.Errorf("malformed %s: duplicate values", openAIAttestationHeader)
+	}
+	return validateOpenAIAttestationValue(values[0])
+}

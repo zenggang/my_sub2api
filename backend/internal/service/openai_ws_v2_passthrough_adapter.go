@@ -856,6 +856,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if buildHdrErr != nil {
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
+	attestation := resolveOpenAIWSAttestationContext(
+		s.cfg,
+		account,
+		func() http.Header {
+			if c != nil && c.Request != nil {
+				return c.Request.Header
+			}
+			return nil
+		}(),
+		newOpenAIWSAttestationScope(),
+	)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -875,6 +886,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		if err != nil {
 			return fmt.Errorf("refresh ws authentication headers: %w", err)
 		}
+		applyOpenAIWSAttestationToDialHeaders(headers, attestation)
 		dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
 		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
 		cancelDial()

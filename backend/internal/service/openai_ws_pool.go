@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -92,6 +94,10 @@ type openAIWSAcquireRequest struct {
 type openAIWSAttestationContext struct {
 	Value string
 	Scope string
+	// Fingerprint is a short-lived in-memory compatibility key. It prevents a
+	// changed proof from reusing an already-established handshake without
+	// retaining the opaque proof in pool state.
+	Fingerprint string
 }
 
 var openAIWSAttestationScopeSeq atomic.Uint64
@@ -115,13 +121,29 @@ func resolveOpenAIWSAttestationContext(cfg *config.Config, account *Account, hea
 }
 
 func (a openAIWSAttestationContext) enabled() bool {
-	return strings.TrimSpace(a.Value) != "" && strings.TrimSpace(a.Scope) != ""
+	return strings.TrimSpace(a.Value) != "" && strings.TrimSpace(a.Scope) != "" && strings.TrimSpace(a.Fingerprint) != ""
 }
 
 func (a openAIWSAttestationContext) normalized() openAIWSAttestationContext {
 	a.Value = strings.TrimSpace(a.Value)
 	a.Scope = strings.TrimSpace(a.Scope)
+	a.Fingerprint = strings.TrimSpace(a.Fingerprint)
+	if a.Value != "" {
+		sum := sha256.Sum256([]byte(a.Value))
+		a.Fingerprint = hex.EncodeToString(sum[:])
+	}
 	return a
+}
+
+func applyOpenAIWSAttestationToDialHeaders(headers http.Header, attestation openAIWSAttestationContext) {
+	if headers == nil {
+		return
+	}
+	headers.Del(openAIAttestationHeader)
+	attestation = attestation.normalized()
+	if attestation.enabled() {
+		headers.Set(openAIAttestationHeader, attestation.Value)
+	}
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
@@ -327,6 +349,7 @@ type openAIWSConn struct {
 	handshakeCompatibility openAIWSHandshakeCompatibilityKey
 	routingAffinity        string
 	attestationScope       string
+	attestationFingerprint string
 
 	leaseCh   chan struct{}
 	closedCh  chan struct{}
@@ -789,7 +812,7 @@ func (c *openAIWSConn) matchesHandshakeCompatibility(compatibility openAIWSHands
 		return false
 	}
 	attestation = attestation.normalized()
-	return c.attestationScope == attestation.Scope
+	return c.attestationScope == attestation.Scope && c.attestationFingerprint == attestation.Fingerprint
 }
 
 func (c *openAIWSConn) matchesRoutingAffinity(routingAffinity string) bool {
@@ -2118,7 +2141,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	headers := cloneHeader(req.Headers)
 	// Keep the opaque proof out of the reusable request/header state. It is
 	// materialized only for this downstream-scoped dial.
-	headers.Del(openAIAttestationHeader)
+	applyOpenAIWSAttestationToDialHeaders(headers, openAIWSAttestationContext{})
 	var err error
 	if req.HeadersFactory != nil {
 		headers, err = req.HeadersFactory(ctx, headers)
@@ -2127,7 +2150,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		}
 	}
 	if req.Attestation.enabled() && p.attestationAllEnabled() {
-		headers.Set(openAIAttestationHeader, req.Attestation.Value)
+		applyOpenAIWSAttestationToDialHeaders(headers, req.Attestation)
 	}
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, headers, req.ProxyURL)
 	if err != nil {
@@ -2158,6 +2181,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
 	pooledConn.attestationScope = req.Attestation.Scope
+	pooledConn.attestationFingerprint = req.Attestation.Fingerprint
 	return pooledConn, nil
 }
 
