@@ -21,6 +21,33 @@ Sub2API 不负责实现 `attestation/generate`、Apple DeviceCheck、签名校�
 
 这项改造不改变 Lite→5.5 兼容逻辑、不改变模型映射、不增加账号例外、不改变账号凭据、不修改 `main`，也不以“证明存在”推断账号认证或业务成功。
 
+## 1.1 开关层级和回退语义
+
+设备证明是跨账号、跨 transport 的上游请求安全边界，开关应放在全局 `GatewayConfig`，建议配置路径为 `gateway.openai_attestation`。不放在账号、分组或请求层：同一份客户端证明可能经过账号池切换，按账号开关会造成证明、Authorization 和连接池语义不一致；请求层开关还会让客户端自行决定代理安全策略。
+
+建议采用枚举模式而不是单一 bool：
+
+```yaml
+gateway:
+  openai_attestation:
+    mode: off       # off | observe | http | all
+```
+
+| 模式 | 行为 |
+| --- | --- |
+| `off` | 不解析、不透传、不建立 attestation scope；现有请求路径保持旧行为 |
+| `observe` | 只做脱敏观测，不向上游发送该头 |
+| `http` | 透传 managed HTTP、passthrough、compact 和 WS→HTTP bridge；原生 WS 握手仍关闭 |
+| `all` | 在 `http` 基础上开启原生 WS 握手和连接池 scope 隔离 |
+
+安全默认值必须是 `off`。第一版不提供账号/分组例外和客户端自选开关；候选灰度通过独立候选实例或受控测试入口完成，不把生产配置切成每账号不同语义。
+
+开关要有全局 kill switch 语义：切回 `off` 只影响新建 HTTP attempt 和新建 WS 握手；已经建立的带证明上游 WS 不能热更新 Header。切换到 `off` 时应立即禁止 attested 连接进入公共池和 prewarm，并标记/排空已有 attested 连接；默认让已有活动流完成，显式强制关闭才中断活动流。这样开关关闭后不会继续产生新的证明外发，又不会把“配置已关闭”误报为存量连接已改变。
+
+实现上建议以配置文件的 `off` 作为启动默认和故障安全值，再用进程内原子 runtime snapshot 读取每个请求。若后续接入管理端热切换，持久化配置和 runtime snapshot 必须原子更新，reload 失败保持旧快照但告警；不能因为数据库/配置中心短暂不可读而自动变成 `all`。切换日志只记录旧/新 mode、操作者、时间和受影响的连接数，不记录证明原文。
+
+`cross_account_attempt_limit=1`、malformed 不 failover、证明相关 401/403 停止切号和 attested prewarm 禁止属于不可被普通账号/分组配置覆盖的安全硬规则；不把它们做成可随意调大的开关。
+
 ## 2. 官方事实和未决事实
 
 官方 [Codex app-server README 的 Attestation generation](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md#attestation-generation) 和 [PR #20619](https://github.com/openai/codex/pull/20619) 给出的事实：
@@ -86,7 +113,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 0：只读观测
 
-先不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、malformed 原因和出站是否一致。
+先将全局 mode 设为 `observe`，不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、malformed 原因和出站是否一致。
 
 观测要求：
 
@@ -98,7 +125,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 1：HTTP 原值透传
 
-在最终目标已确定为 ChatGPT Codex Responses 的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。helper 必须硬检查最终 scheme、hostname、path、账号类型和 Responses 路径；判断依据不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
+将全局 mode 从 `observe` 切到 `http` 后，在最终目标已确定为 ChatGPT Codex Responses 的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。helper 必须硬检查最终 scheme、hostname、path、账号类型和 Responses 路径；判断依据不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
 
 验收：
 
@@ -110,7 +137,7 @@ WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`o
 
 ### 阶段 2：原生 WS 握手和作用域
 
-`buildOpenAIWSHeaders` 接收当前下游 WS 连接的证明上下文和 `AttestationScope`。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断，并让 scope 贯穿所有池操作。
+将全局 mode 从 `http` 切到 `all` 后，`buildOpenAIWSHeaders` 接收当前下游 WS 连接的证明上下文和 `AttestationScope`。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断，并让 scope 贯穿所有池操作。
 
 建议先采用保守策略：
 
@@ -142,6 +169,8 @@ compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游�
 
 ### 单元和构造器测试
 
+- `off`、`observe`、`http`、`all` 四种 mode 的路由矩阵；默认配置和 reload 失败都保持 `off`/旧快照，不得意外开启透传。
+- 从 `all` 切回 `off` 后，新请求不再透传，已有 attested WS 被禁止复用和 prewarm，活动流按 drain 语义处理。
 - managed HTTP、passthrough HTTP、compact：有/无证明，原值、状态和长度一致。
 - `s=0/1/2/3/4`、未知状态、重复 header、超长值、异常字符。
 - malformed 不触发账号切换、同账号无限重试或共享池复用，并返回固定的确定性请求错误。
