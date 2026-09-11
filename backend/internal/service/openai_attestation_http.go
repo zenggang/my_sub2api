@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -13,16 +14,37 @@ import (
 )
 
 const (
-	openAIAttestationHeader    = "x-oai-attestation"
-	openAIAttestationMaxBytes  = 64 * 1024
-	openAIAttestationCodexPath = "/backend-api/codex/responses"
+	openAIAttestationHeader         = "x-oai-attestation"
+	openAIAttestationMaxBytes       = 64 * 1024
+	openAIAttestationCodexPath      = "/backend-api/codex/responses"
+	openAIAttestationFailoverReason = GatewayFailureReason("openai_attestation_auth_failure")
+	openAIAttestationSwitchCountKey = "openai_attestation_switch_count"
 )
+
+// SetOpenAIAttestationSwitchCount exposes request-local account-switch state
+// to the service layer. It is used only to cap a proof-bearing request at one
+// new OAuth account attempt; it is never persisted.
+func SetOpenAIAttestationSwitchCount(c *gin.Context, count int) {
+	if c == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	c.Set(openAIAttestationSwitchCountKey, count)
+}
 
 // applyOpenAIAttestationHTTPForwarding forwards only a client-provided
 // attestation to the ChatGPT OAuth/SetupToken Responses endpoint. It never
 // creates, normalizes, or persists an attestation value.
 func (s *OpenAIGatewayService) applyOpenAIAttestationHTTPForwarding(c *gin.Context, req *http.Request, account *Account, targetURL string) error {
-	if s == nil || s.cfg == nil || c == nil || c.Request == nil || req == nil || account == nil {
+	if req == nil || account == nil {
+		return nil
+	}
+	// The header is opt-in and target-gated. Remove any value that may have
+	// entered through a generic override before evaluating the forwarding mode.
+	req.Header.Del(openAIAttestationHeader)
+	if s == nil || s.cfg == nil || c == nil || c.Request == nil {
 		return nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.Gateway.OpenAIAttestation.Mode))
@@ -53,6 +75,41 @@ func (s *OpenAIGatewayService) applyOpenAIAttestationHTTPForwarding(c *gin.Conte
 	}
 	req.Header.Set(openAIAttestationHeader, value)
 	return nil
+}
+
+// guardOpenAIAttestationFailover prevents an authentication/risk response from
+// being replayed against another OAuth account with the same client proof.
+// Capacity/503 errors retain the existing account-pool behavior.
+func (s *OpenAIGatewayService) guardOpenAIAttestationFailover(c *gin.Context, account *Account, failoverErr *UpstreamFailoverError) *UpstreamFailoverError {
+	if failoverErr == nil || s == nil || s.cfg == nil || account == nil || !account.IsOpenAIOAuthLike() {
+		return failoverErr
+	}
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.Gateway.OpenAIAttestation.Mode))
+	if mode != config.OpenAIAttestationModeHTTP && mode != config.OpenAIAttestationModeAll || c == nil || c.Request == nil {
+		return failoverErr
+	}
+	values := incomingOpenAIAttestationValues(c.Request.Header)
+	if len(values) != 1 || validateOpenAIAttestationValue(values[0]) != nil {
+		return failoverErr
+	}
+	authFailure := failoverErr.StatusCode == http.StatusUnauthorized || failoverErr.StatusCode == http.StatusForbidden
+	switchCount := 0
+	if raw, ok := c.Get(openAIAttestationSwitchCountKey); ok {
+		if count, ok := raw.(int); ok && count > 0 {
+			switchCount = count
+		}
+	}
+	if !authFailure && switchCount < 1 {
+		return failoverErr
+	}
+	failoverErr.RetryableOnSameAccount = false
+	failoverErr.SameAccountRetryDelay = 0
+	failoverErr.SameAccountRetryDeadline = time.Time{}
+	failoverErr.SameAccountRetryMax = 0
+	failoverErr.NextAccountAction = NextAccountStop
+	failoverErr.Scope = GatewayFailureScopeRequest
+	failoverErr.Reason = openAIAttestationFailoverReason
+	return failoverErr
 }
 
 func observeOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL string) {

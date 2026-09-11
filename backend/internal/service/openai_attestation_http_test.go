@@ -87,6 +87,17 @@ func TestOpenAIAttestationHTTPModeDoesNotEnableWSBridge(t *testing.T) {
 	require.Empty(t, req.Header.Get(openAIAttestationHeader))
 }
 
+func TestOpenAIAttestationHTTPForwardingRemovesUnscopedExistingHeader(t *testing.T) {
+	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.client"}`)
+	req := httptest.NewRequest(http.MethodPost, openaiPlatformAPIURL, nil)
+	req.Header.Set(openAIAttestationHeader, "override-must-not-leak")
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeHTTP},
+	}}}
+	require.NoError(t, svc.applyOpenAIAttestationHTTPForwarding(c, req, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, openaiPlatformAPIURL))
+	require.Empty(t, req.Header.Get(openAIAttestationHeader))
+}
+
 func TestOpenAIAttestationAllModeEnablesWSBridgeHTTPTurn(t *testing.T) {
 	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.bridge"}`)
 	c.Set("openai_ws_http_bridge", true)
@@ -123,4 +134,24 @@ func TestOpenAIAttestationWSValidationUsesAllModeAndOAuthGate(t *testing.T) {
 	require.NoError(t, validateOpenAIAttestationForWS(cfg, oauth, http.Header{
 		openAIAttestationHeader: []string{"bad\x00value", "second"},
 	}))
+}
+
+func TestOpenAIAttestationFailoverGuardStopsOAuthAuthSwitchOnly(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		OpenAIAttestation: config.GatewayOpenAIAttestationConfig{Mode: config.OpenAIAttestationModeHTTP},
+	}}
+	c := newAttestationHTTPTestContext(`{"v":1,"s":0,"t":"v1.guard"}`)
+	svc := &OpenAIGatewayService{cfg: cfg}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	authErr := svc.guardOpenAIAttestationFailover(c, account, &UpstreamFailoverError{StatusCode: http.StatusForbidden, RetryableOnSameAccount: true})
+	require.Equal(t, NextAccountStop, authErr.NextAccountAction)
+	require.Equal(t, openAIAttestationFailoverReason, authErr.Reason)
+	require.False(t, authErr.ShouldRetryNextAccount())
+
+	capacityErr := svc.guardOpenAIAttestationFailover(c, account, &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable})
+	require.True(t, capacityErr.ShouldRetryNextAccount(), "503 capacity behavior remains unchanged")
+	SetOpenAIAttestationSwitchCount(c, 1)
+	capacityAfterSwitch := svc.guardOpenAIAttestationFailover(c, account, &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable})
+	require.False(t, capacityAfterSwitch.ShouldRetryNextAccount(), "a proof-bearing request gets at most one new OAuth account attempt")
 }

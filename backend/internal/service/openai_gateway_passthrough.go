@@ -915,7 +915,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		Detail:               upstreamDetail,
 		UpstreamResponseBody: upstreamDetail,
 	})
-	return s.newOpenAIAccountFailoverError(
+	failoverErr := s.newOpenAIAccountFailoverError(
 		account,
 		resp.StatusCode,
 		resp.Header,
@@ -924,6 +924,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		shouldDisable,
 		!shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 	)
+	return s.guardOpenAIAttestationFailover(c, account, failoverErr)
 }
 
 func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
@@ -1762,12 +1763,12 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithModel(
 	}
 	failoverErr := s.newOpenAIAccountFailoverErrorWithClassificationHeaders(account, statusCode, headers, classificationHeaders, payload, message, shouldDisable, retryableOnSameAccount)
 	if failoverErr.IsCredentialFailure() || failoverErr.RequestScopedTransient {
-		return failoverErr
+		return s.guardOpenAIAttestationFailover(c, account, failoverErr)
 	}
 	// Preserve the existing generic envelope for unclassified stream failures;
 	// only typed access/capacity failures need the original payload downstream.
 	failoverErr.ResponseBody = body
-	return failoverErr
+	return s.guardOpenAIAttestationFailover(c, account, failoverErr)
 }
 
 // nonStreamingTerminalFailureFailover applies the streaming path's terminal-event
