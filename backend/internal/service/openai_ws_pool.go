@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -80,6 +82,68 @@ type openAIWSAcquireRequest struct {
 	ForceNewConn bool
 	// ForcePreferredConn: 强制本次只使用 PreferredConnID，禁止漂移到其它连接。
 	ForcePreferredConn bool
+	// Attestation is kept separate from Headers so the opaque proof is only
+	// materialized for the dial that owns this downstream scope. It must never
+	// be retained in lastAcquire or delayed prewarm state.
+	Attestation openAIWSAttestationContext
+}
+
+// openAIWSAttestationContext identifies one downstream WebSocket scope. The
+// raw value is intentionally short lived: it is consumed by dialConn and is
+// never copied into pooled/prewarm request state.
+type openAIWSAttestationContext struct {
+	Value string
+	Scope string
+	// Fingerprint is a short-lived in-memory compatibility key. It prevents a
+	// changed proof from reusing an already-established handshake without
+	// retaining the opaque proof in pool state.
+	Fingerprint string
+}
+
+var openAIWSAttestationScopeSeq atomic.Uint64
+
+func newOpenAIWSAttestationScope() string {
+	return fmt.Sprintf("oa_att_scope_%d", openAIWSAttestationScopeSeq.Add(1))
+}
+
+// resolveOpenAIWSAttestationContext extracts the client proof without placing
+// it in the general WS handshake header map. Callers should create one scope
+// per downstream WebSocket and reuse it for all turns/retries of that socket.
+func resolveOpenAIWSAttestationContext(cfg *config.Config, account *Account, headers http.Header, scope string) openAIWSAttestationContext {
+	if cfg == nil || !strings.EqualFold(strings.TrimSpace(cfg.Gateway.OpenAIAttestation.Mode), config.OpenAIAttestationModeAll) || account == nil || !account.IsOpenAIOAuthLike() {
+		return openAIWSAttestationContext{}
+	}
+	values := incomingOpenAIAttestationValues(headers)
+	if len(values) != 1 || validateOpenAIAttestationValue(values[0]) != nil {
+		return openAIWSAttestationContext{}
+	}
+	return openAIWSAttestationContext{Value: values[0], Scope: strings.TrimSpace(scope)}.normalized()
+}
+
+func (a openAIWSAttestationContext) enabled() bool {
+	return strings.TrimSpace(a.Value) != "" && strings.TrimSpace(a.Scope) != "" && strings.TrimSpace(a.Fingerprint) != ""
+}
+
+func (a openAIWSAttestationContext) normalized() openAIWSAttestationContext {
+	a.Value = strings.TrimSpace(a.Value)
+	a.Scope = strings.TrimSpace(a.Scope)
+	a.Fingerprint = strings.TrimSpace(a.Fingerprint)
+	if a.Value != "" {
+		sum := sha256.Sum256([]byte(a.Value))
+		a.Fingerprint = hex.EncodeToString(sum[:])
+	}
+	return a
+}
+
+func applyOpenAIWSAttestationToDialHeaders(headers http.Header, attestation openAIWSAttestationContext) {
+	if headers == nil {
+		return
+	}
+	headers.Del(openAIAttestationHeader)
+	attestation = attestation.normalized()
+	if attestation.enabled() {
+		headers.Set(openAIAttestationHeader, attestation.Value)
+	}
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
@@ -284,6 +348,8 @@ type openAIWSConn struct {
 	handshakeHeaders       http.Header
 	handshakeCompatibility openAIWSHandshakeCompatibilityKey
 	routingAffinity        string
+	attestationScope       string
+	attestationFingerprint string
 
 	leaseCh   chan struct{}
 	closedCh  chan struct{}
@@ -741,8 +807,12 @@ func (c *openAIWSConn) handshakeHeader(name string) string {
 	return strings.TrimSpace(c.handshakeHeaders.Get(strings.TrimSpace(name)))
 }
 
-func (c *openAIWSConn) matchesHandshakeCompatibility(compatibility openAIWSHandshakeCompatibilityKey) bool {
-	return c != nil && c.handshakeCompatibility == compatibility
+func (c *openAIWSConn) matchesHandshakeCompatibility(compatibility openAIWSHandshakeCompatibilityKey, attestation openAIWSAttestationContext) bool {
+	if c == nil || c.handshakeCompatibility != compatibility {
+		return false
+	}
+	attestation = attestation.normalized()
+	return c.attestationScope == attestation.Scope && c.attestationFingerprint == attestation.Fingerprint
 }
 
 func (c *openAIWSConn) matchesRoutingAffinity(routingAffinity string) bool {
@@ -1091,10 +1161,13 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 	if stringsTrim(req.WSURL) == "" {
 		return nil, errors.New("ws url is empty")
 	}
+	req.Attestation = p.normalizeAttestationContext(req.Attestation)
 
 retryAcquire:
 	accountID := req.Account.ID
 	compatibility := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	req.Attestation = p.normalizeAttestationContext(req.Attestation)
+	attestation := req.Attestation
 	routingAffinity := normalizeOpenAIWSRoutingAffinity(req.Headers)
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
 	if effectiveMaxConns <= 0 {
@@ -1123,7 +1196,7 @@ retryAcquire:
 				return nil, errOpenAIWSPreferredConnUnavailable
 			}
 			preferredConn, ok := ap.conns[preferredConnID]
-			if !ok || !preferredConn.matchesHandshakeCompatibility(compatibility) {
+			if !ok || !preferredConn.matchesHandshakeCompatibility(compatibility, attestation) {
 				p.recordConnPickDuration(time.Since(pickStartedAt))
 				ap.mu.Unlock()
 				closeOpenAIWSConns(evicted)
@@ -1215,7 +1288,7 @@ retryAcquire:
 		}
 
 		if preferredConnID != "" {
-			if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility) && conn.tryAcquire() {
+			if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility, attestation) && conn.tryAcquire() {
 				connPick := time.Since(pickStartedAt)
 				p.recordConnPickDuration(connPick)
 				ap.mu.Unlock()
@@ -1243,7 +1316,7 @@ retryAcquire:
 		// A routing hint is advisory at WebSocket dial time. Prefer a pooled
 		// connection whose handshake used the same hint, but do not make that
 		// preference a continuation compatibility requirement.
-		best := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity)
+		best := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity, attestation)
 		if best != nil && best.tryAcquire() {
 			connPick := time.Since(pickStartedAt)
 			p.recordConnPickDuration(connPick)
@@ -1269,7 +1342,7 @@ retryAcquire:
 		}
 		if routingAffinity == "" || len(ap.conns)+ap.creating >= effectiveMaxConns {
 			for _, conn := range ap.conns {
-				if conn == nil || conn == best || !conn.matchesHandshakeCompatibility(compatibility) {
+				if conn == nil || conn == best || !conn.matchesHandshakeCompatibility(compatibility, attestation) {
 					continue
 				}
 				if conn.tryAcquire() {
@@ -1299,13 +1372,13 @@ retryAcquire:
 	}
 
 	if !req.ForceNewConn && len(ap.conns)+ap.creating >= effectiveMaxConns {
-		affine := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity)
-		if idle := p.pickOldestIdleConnWithoutHandshakeCompatibilityLocked(ap, compatibility); idle != nil {
+		affine := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity, attestation)
+		if idle := p.pickOldestIdleConnWithoutHandshakeCompatibilityLocked(ap, compatibility, attestation); idle != nil {
 			delete(ap.conns, idle.id)
 			evicted = append(evicted, idle)
 			p.metrics.scaleDownTotal.Add(1)
 		} else if affine == nil {
-			compatible := p.pickLeastBusyConnLocked(ap, "", compatibility)
+			compatible := p.pickLeastBusyConnLocked(ap, "", compatibility, attestation)
 			if compatible != nil {
 				// Capacity is full and every compatible connection is busy. The
 				// hint remains soft here: queue on a compatible connection below.
@@ -1405,7 +1478,7 @@ retryAcquire:
 	}
 
 acquireAtCapacity:
-	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, compatibility)
+	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, compatibility, attestation)
 	connPick := time.Since(pickStartedAt)
 	p.recordConnPickDuration(connPick)
 	if target == nil {
@@ -1479,7 +1552,11 @@ func (p *openAIWSConnPool) recordLastSuccessfulAcquire(accountID int64, generati
 		ap.mu.Unlock()
 		return
 	}
-	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&req)
+	// Retain only routing metadata. The opaque attestation value is never
+	// allowed into delayed prewarm state or the account-level lastAcquire slot.
+	safe := req
+	safe.Attestation.Value = ""
+	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&safe)
 	ap.mu.Unlock()
 }
 
@@ -1502,6 +1579,7 @@ func (p *openAIWSConnPool) pickOldestIdleConnLocked(ap *openAIWSAccountPool) *op
 func (p *openAIWSConnPool) pickOldestIdleConnWithoutHandshakeCompatibilityLocked(
 	ap *openAIWSAccountPool,
 	compatibility openAIWSHandshakeCompatibilityKey,
+	attestation openAIWSAttestationContext,
 ) *openAIWSConn {
 	if ap == nil || len(ap.conns) == 0 {
 		return nil
@@ -1509,7 +1587,7 @@ func (p *openAIWSConnPool) pickOldestIdleConnWithoutHandshakeCompatibilityLocked
 	var oldest *openAIWSConn
 	for _, conn := range ap.conns {
 		if conn == nil ||
-			conn.matchesHandshakeCompatibility(compatibility) ||
+			conn.matchesHandshakeCompatibility(compatibility, attestation) ||
 			conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
 			continue
 		}
@@ -1674,13 +1752,14 @@ func (p *openAIWSConnPool) pickLeastBusyConnLocked(
 	ap *openAIWSAccountPool,
 	preferredConnID string,
 	compatibility openAIWSHandshakeCompatibilityKey,
+	attestation openAIWSAttestationContext,
 ) *openAIWSConn {
 	if ap == nil || len(ap.conns) == 0 {
 		return nil
 	}
 	preferredConnID = stringsTrim(preferredConnID)
 	if preferredConnID != "" {
-		if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility) {
+		if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility, attestation) {
 			return conn
 		}
 	}
@@ -1688,7 +1767,7 @@ func (p *openAIWSConnPool) pickLeastBusyConnLocked(
 	var bestWaiters int32
 	var bestLastUsed time.Time
 	for _, conn := range ap.conns {
-		if conn == nil || !conn.matchesHandshakeCompatibility(compatibility) {
+		if conn == nil || !conn.matchesHandshakeCompatibility(compatibility, attestation) {
 			continue
 		}
 		waiters := conn.waiters.Load()
@@ -1708,6 +1787,7 @@ func (p *openAIWSConnPool) pickLeastBusyConnWithRoutingAffinityLocked(
 	ap *openAIWSAccountPool,
 	compatibility openAIWSHandshakeCompatibilityKey,
 	routingAffinity string,
+	attestation openAIWSAttestationContext,
 ) *openAIWSConn {
 	if ap == nil || len(ap.conns) == 0 {
 		return nil
@@ -1717,7 +1797,7 @@ func (p *openAIWSConnPool) pickLeastBusyConnWithRoutingAffinityLocked(
 	var bestLastUsed time.Time
 	for _, conn := range ap.conns {
 		if conn == nil ||
-			!conn.matchesHandshakeCompatibility(compatibility) ||
+			!conn.matchesHandshakeCompatibility(compatibility, attestation) ||
 			!conn.matchesRoutingAffinity(routingAffinity) {
 			continue
 		}
@@ -1780,6 +1860,11 @@ func (p *openAIWSConnPool) ensureTargetIdleAsync(accountID int64) {
 	ap.mu.Lock()
 	defer ap.mu.Unlock()
 	if ap.lastAcquire == nil {
+		return
+	}
+	// A proof is scoped to the downstream WebSocket and must not be replayed by
+	// account-level prewarm. Attested connections are created on demand only.
+	if ap.lastAcquire.Attestation.enabled() || strings.TrimSpace(ap.lastAcquire.Attestation.Scope) != "" {
 		return
 	}
 	if ap.prewarmActive {
@@ -2054,12 +2139,18 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		return nil, errors.New("openai ws client dialer is nil")
 	}
 	headers := cloneHeader(req.Headers)
+	// Keep the opaque proof out of the reusable request/header state. It is
+	// materialized only for this downstream-scoped dial.
+	applyOpenAIWSAttestationToDialHeaders(headers, openAIWSAttestationContext{})
 	var err error
 	if req.HeadersFactory != nil {
 		headers, err = req.HeadersFactory(ctx, headers)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if req.Attestation.enabled() && p.attestationAllEnabled() {
+		applyOpenAIWSAttestationToDialHeaders(headers, req.Attestation)
 	}
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, headers, req.ProxyURL)
 	if err != nil {
@@ -2089,6 +2180,8 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	pooledConn.onPeerClosed.Store(&evict)
 	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
+	pooledConn.attestationScope = req.Attestation.Scope
+	pooledConn.attestationFingerprint = req.Attestation.Fingerprint
 	return pooledConn, nil
 }
 
@@ -2125,6 +2218,30 @@ func (p *openAIWSConnPool) dynamicMaxConnsEnabled() bool {
 		return p.cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled
 	}
 	return false
+}
+
+func (p *openAIWSConnPool) attestationAllEnabled() bool {
+	return p != nil && p.cfg != nil && strings.EqualFold(strings.TrimSpace(p.cfg.Gateway.OpenAIAttestation.Mode), config.OpenAIAttestationModeAll)
+}
+
+func (p *openAIWSConnPool) normalizeAttestationContext(attestation openAIWSAttestationContext) openAIWSAttestationContext {
+	if !p.attestationAllEnabled() {
+		return openAIWSAttestationContext{}
+	}
+	attestation = attestation.normalized()
+	if attestation.Value == "" {
+		return openAIWSAttestationContext{}
+	}
+	if validateOpenAIAttestationValue(attestation.Value) != nil {
+		return openAIWSAttestationContext{}
+	}
+	// A missing scope must never fall back to the shared account pool. Generate
+	// an isolated scope for this acquire attempt; callers should normally pass a
+	// stable scope for all turns of one downstream WebSocket.
+	if attestation.Scope == "" {
+		attestation.Scope = newOpenAIWSAttestationScope()
+	}
+	return attestation
 }
 
 func (p *openAIWSConnPool) modeRouterV2Enabled() bool {
@@ -2257,6 +2374,11 @@ func (p *openAIWSConnPool) dialTimeout() time.Duration {
 func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequest {
 	copied := req
 	copied.Headers = cloneHeader(req.Headers)
+	// x-oai-attestation is represented only by Attestation. Never retain a raw
+	// copy in the generic header map where it could reach lastAcquire/prewarm.
+	if copied.Headers != nil {
+		copied.Headers.Del(openAIAttestationHeader)
+	}
 	copied.WSURL = stringsTrim(req.WSURL)
 	copied.ProxyURL = stringsTrim(req.ProxyURL)
 	copied.PreferredConnID = stringsTrim(req.PreferredConnID)

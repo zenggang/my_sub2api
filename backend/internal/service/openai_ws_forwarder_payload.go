@@ -92,6 +92,14 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if account == nil || !account.IsOpenAIAgentIdentity() {
 		headers.Set("authorization", "Bearer "+token)
 	}
+	if err := validateOpenAIAttestationForWS(s.cfg, account, func() http.Header {
+		if c != nil && c.Request != nil {
+			return c.Request.Header
+		}
+		return nil
+	}()); err != nil {
+		return nil, openAIWSSessionHeaderResolution{}, err
+	}
 
 	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
 	if c != nil && c.Request != nil {

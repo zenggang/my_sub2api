@@ -977,6 +977,9 @@ type GatewayConfig struct {
 	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
 	// 用于网关未透传/改写 User-Agent 时的兼容兜底（默认关闭，避免影响其他客户端）。
 	ForceCodexCLI bool `mapstructure:"force_codex_cli"`
+	// OpenAIAttestation controls forwarding of client-provided Codex attestation.
+	// The safe default is off; WS/bridge forwarding is enabled only by the all mode.
+	OpenAIAttestation GatewayOpenAIAttestationConfig `mapstructure:"openai_attestation"`
 	// DisableCodexIdentityEnforcement: 关闭「强制统一 Codex 出站身份」。上游 /backend-api/codex
 	// 在容量紧张时按客户端身份分优先级降载，被降载的请求会拿到 HTTP 200 + 流内
 	// server_is_overloaded，该次请求失败。默认强制统一出口：所有 OAuth 出站的
@@ -1100,6 +1103,20 @@ type GatewayConfig struct {
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
 }
+
+// GatewayOpenAIAttestationConfig controls staged forwarding of x-oai-attestation.
+type GatewayOpenAIAttestationConfig struct {
+	// Mode: off, observe, http, or all. The current implementation forwards the
+	// HTTP path for http/all; native WS remains unchanged until its scope support lands.
+	Mode string `mapstructure:"mode"`
+}
+
+const (
+	OpenAIAttestationModeOff     = "off"
+	OpenAIAttestationModeObserve = "observe"
+	OpenAIAttestationModeHTTP    = "http"
+	OpenAIAttestationModeAll     = "all"
+)
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
 //
@@ -2372,6 +2389,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
+	viper.SetDefault("gateway.openai_attestation.mode", OpenAIAttestationModeOff)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
@@ -3300,6 +3318,11 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 1800 ||
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIAttestation.Mode)) {
+	case "", OpenAIAttestationModeOff, OpenAIAttestationModeObserve, OpenAIAttestationModeHTTP, OpenAIAttestationModeAll:
+	default:
+		return fmt.Errorf("gateway.openai_attestation.mode must be one of: %s/%s/%s/%s", OpenAIAttestationModeOff, OpenAIAttestationModeObserve, OpenAIAttestationModeHTTP, OpenAIAttestationModeAll)
 	}
 	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
 		c.Gateway.Live.MaxSessionDurationSeconds = 3600
