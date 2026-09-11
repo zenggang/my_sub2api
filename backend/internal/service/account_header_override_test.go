@@ -290,7 +290,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 			"connection", "accept-encoding", "Sec-WebSocket-Key", "session_id",
 			"conversation_id", "x-codex-turn-state", "chatgpt-account-id",
 			"Content-Type", "Cookie", "x-goog-api-key",
-			"X-Claude-Code-Session-Id", "x-client-request-id",
+			"X-Claude-Code-Session-Id", "x-client-request-id", "x-oai-attestation",
 		} {
 			err := NormalizeHeaderOverrideCredentials(map[string]any{
 				credKeyHeaderOverrides: map[string]any{name: "v"},
