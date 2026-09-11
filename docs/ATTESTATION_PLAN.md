@@ -30,6 +30,7 @@ Sub2API 不负责实现 `attestation/generate`、Apple DeviceCheck、签名校�
 - app-server 包装为 `{ "v":1, "s":0, "t":"v1.<opaque>" }`，失败状态为 `s=1/2/3/4`，无可用客户端时省略 header。
 - 官方 E2E 覆盖了 HTTP POST 和 WebSocket `/backend-api/codex/responses`。
 - 当前实现只在 ChatGPT Auth 且存在 attestation provider 时尝试生成；API key 不是该机制的生成来源。
+- 方案依据的官方代码快照记录为合并 commit `5f4d0ec343d807f6932e6bdc5785dc5a127ac409`（PR 合并于 2026-05-08 UTC）；实现前若官方协议变化，必须重新核对 README、协议 schema 和对应 commit。
 
 公开材料没有证明以下内容：
 
@@ -57,61 +58,65 @@ Sub2API 不负责实现 `attestation/generate`、Apple DeviceCheck、签名校�
 
 ## 4. 总体设计
 
-新增一个只负责转发边界的内部概念：`AttestationForwardingContext`。它不保存原文 token 到数据库或 Redis，生命周期不超过一次请求或一次下游 WS 连接。
+新增两个彼此分离的内部对象：`AttestationForwardingContext` 和 `AttestationScope`。
 
-建议字段：
+`AttestationForwardingContext` 只在当前 HTTP attempt 或下游 WS 连接生命周期内存在；原始 `value` 不能进入 `openAIWSAcquireRequest.Headers`、`lastAcquire`、账号级 prewarm、数据库、Redis 或长期连接元数据。`AttestationScope` 是不可由客户端自报的本地下游连接作用域 ID，不能作为长期设备 ID。
 
-| 字段 | 用途 | 是否进入日志 |
+| 字段 | 用途 | 保存边界 |
 | --- | --- | --- |
-| `present` | 入站是否存在 | 是 |
-| `value` | 原始 header，仅存在于当前出站构造上下文 | 否 |
-| `version` | 可解析时取外层 `v` | 是 |
-| `status` | 可解析时取外层 `s` | 是 |
-| `length` | 原值字节长度 | 是 |
-| `digest` | 内存中的短 SHA-256 摘要，用于同一次请求/连接比较 | 仅短期诊断，禁止作为长期设备 ID |
-| `scope` | 下游 HTTP attempt 或 WS 连接作用域 | 是，使用内部 request/connection ID |
+| `present` | 入站是否存在 | 可记录 |
+| `value` | 原始 header | 仅当前出站构造/握手，不写入池状态 |
+| `version/status` | best-effort 解析外层 `v/s` | 可记录 |
+| `length` | 原值字节长度 | 可记录 |
+| `scope` | HTTP attempt 或 WS 下游连接作用域 | 短生命周期，连接关闭即清理 |
+| `comparison` | 入站/出站是否一致 | 默认只记录一致性，不记录稳定 digest |
 
-解析规则：
+解析和错误规则：
 
-1. 入站没有该头，保持没有；Sub2API 不补默认 envelope。
-2. 只有一个 header value 时原样复制，包括 `s=0` 和 `s=1..4`；不解码 `t`，不重排 JSON，不重新序列化。
-3. 出现重复 header value、超过合理长度或明显控制字符时，不拼接、不选择第一项；该 attempt 不向上游发送，并记录 `malformed`。具体长度上限在实现前根据 Go transport 和官方请求实测确定，不能凭经验硬编码。
-4. HTTP 重试/同请求切号沿用入站原值；不把它写回入站请求，不把本次值放进账号记录、Redis、数据库或跨请求缓存。
-5. WS 证明属于下游握手连接作用域。新握手重新接收；证明改变时不能在旧上游握手上热更新 header。
+1. 入站没有该头，保持没有；Sub2API 不补 envelope。
+2. 单值时原样复制，包括 `s=0` 和 `s=1..4`；不解码 `t`，不重排 JSON，不重新序列化。
+3. 遍历 Header map 检查大小写变体和多值。重复值、控制字符、超过实现前固定并文档化的长度上限都归类为 `malformed_attestation`：该 attempt 不发送证明，不触发账号切换或无限重试，按确定性客户端请求错误返回。
+4. 未知但可传输的 envelope 保留原值；`v/s` 仅 best-effort 解析，解析失败只影响观测字段，不改变透传值。
+5. HTTP 同请求重试沿用当前入站值，但每个 attempt 都重新经过目标路径和 malformed 检查；不修改入站 Header。
+6. WS 证明属于下游握手 scope。证明变化必须新建上游握手；不能在旧 WebSocket 上热更新 header。
+
+WS 池硬约束：`scope` 必须从 ingress 贯穿 `openAIWSAcquireRequest`、`openAIWSConn`、preferred/pinned/least-busy pick、handshake match、prewarm target、eviction 和 close。不同 scope 即使证明内容相同也不能复用；有证明但无 scope 时强制新建且不进入公共 idle pool。带证明连接默认关闭跨 scope prewarm；如需预热，必须由同一 scope 通过 `HeadersFactory` 重新提供当前证明，不能从缓存 Header 重拨。
 
 ## 5. 分阶段实施
 
 ### 阶段 0：只读观测
 
-先不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、短摘要和 malformed 原因。
+先不改变上游请求。对 118 收到的真实请求增加受控、脱敏的存在性观测，至少覆盖：请求 ID、transport、target path、账号 attempt、`present`、`v/s`、长度、malformed 原因和出站是否一致。
 
 观测要求：
 
 - 不记录 Authorization、完整 header、`t`、DeviceCheck 原文或可直接重放的值。
-- 只在已配置的诊断日志级别记录短摘要；默认日志保留计数和状态。
+- 默认只记录计数、状态和入站/出站一致性；需要短期采样时使用 keyed HMAC，不保存稳定 digest，设定 TTL、访问权限和 metrics cardinality 上限。
 - 对同一 request_id 去重，区分首次 attempt、同账号重试、切换账号和最终终态。
-- 先确认 Desktop→Sub2API 是否真的有 header，再决定透传命中率；没有入站值时不把“缺失”归因于 Sub2API 丢弃。
+- 观测不写业务 ledger、账号配置或 Redis；只写受控诊断日志/临时验证材料。先确认 Desktop→Sub2API 是否真的有 header，再决定透传命中率；没有入站值时不把“缺失”归因于 Sub2API 丢弃。
+- 要证明上游实际收到，必须在候选上游出口或可控测试端点核对；Sub2API 自己的入站日志不能单独证明外发成功。
 
 ### 阶段 1：HTTP 原值透传
 
-在最终目标已确定为 ChatGPT Codex Responses 的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。判断依据是最终 URL/协议和账号类型，不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
+在最终目标已确定为 ChatGPT Codex Responses 的 managed HTTP、passthrough HTTP 和 compact 构造点调用同一个 helper。helper 必须硬检查最终 scheme、hostname、path、账号类型和 Responses 路径；判断依据不是客户端自报 Host、User-Agent 或普通 OpenAI-compatible 标签。
 
 验收：
 
 - 有效 `s=0`、四种失败 envelope 和未知但语法合法的 envelope 原值一致。
 - 入站缺失仍缺失；API key/第三方上游不会收到该头。
+- `malformed_attestation` 是确定性请求错误，不进入账号 failover、不反复重试。
 - Lite→5.5 仍独立移除 Lite 标记；两者同时存在时证明保留、Lite 按原兼容规则处理。
 - 失败重试和账号切换不改入站 header；每个 attempt 的观测能显示同一入站摘要。
 
 ### 阶段 2：原生 WS 握手和作用域
 
-`buildOpenAIWSHeaders` 接收当前下游 WS 连接的证明上下文。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断。
+`buildOpenAIWSHeaders` 接收当前下游 WS 连接的证明上下文和 `AttestationScope`。握手时按阶段 1 的目标判断透传。连接池必须把“是否带证明、证明作用域”纳入兼容性判断，并让 scope 贯穿所有池操作。
 
 建议先采用保守策略：
 
-- 带证明的上游 WS 连接只在同一个下游 WS 连接作用域内复用。
-- 在作用域尚未建立、证明存在但无法安全关联时，禁止从公共 idle pool 借连接，强制新建连接。
-- `lastAcquire` 不保存原始证明；对带证明连接不做跨作用域后台 prewarm。需要预热时，必须由同一个下游作用域重新提供证明，否则关闭该连接的 prewarm。
+- 带证明的上游 WS 连接只在同一个下游 WS 连接作用域内复用；不同 scope 即使证明内容相同也不能复用。
+- 在作用域尚未建立、证明存在但无法安全关联时，禁止从公共 idle pool 借连接，强制新建连接且不进入公共 pool。
+- `openAIWSAcquireRequest.Headers` 和 `lastAcquire` 不保存原始证明；对带证明连接关闭跨 scope 后台 prewarm。需要预热时，必须由同一个下游作用域通过 `HeadersFactory` 重新提供当前证明，否则不预热。
 - 证明值变化必须新建上游握手；不能只更新连接池 key 或在已建立的 WebSocket 上补 Header。
 - 无证明的连接不能复用到有证明请求；有证明连接也不能被无证明请求借用，除非明确证明该连接作用域与目标路径完全隔离。
 
@@ -119,16 +124,19 @@ Sub2API 不负责实现 `attestation/generate`、Apple DeviceCheck、签名校�
 
 bridge 的每个 HTTP turn 都从下游 WS 连接作用域取得证明上下文。首版不尝试让 Sub2API 向 Desktop 请求刷新证明，也不把证明塞进 `response.create` payload。
 
+compact/bridge 的每个 turn 继承同一 WS scope；客户端断开、上游连接关闭、failover 终止或 bridge session 清理时同时清理 scope 和证明上下文，不把它留在连接池或全局 context。metrics 不使用原始 scope 作为无限 cardinality 标签，使用受限 transport/状态枚举。
+
 账号 A→B failover 时：
 
 - 保留客户端这次请求携带的证明原值，向 B 的新出站 attempt 透传，并记录 `attestation_account_switch=true`。
 - 不声称 A 的证明对 B 有效；如果上游返回认证/风控相关失败，按现有 failover 语义处理并单独归因。
+- 带证明请求跨账号最多允许一次新账号尝试；证明/认证相关 401/403 立即停止切号，provider 503 仍按现有容量归因处理；已有语义输出后继续禁止 replay。
 - 不把 A 的证明写进 B 账号、账号池或长驻连接缓存。
-- 如果后续证据证明 OpenAI 要求证明和账号严格绑定，再增加“带证明请求禁止跨账号 failover”的显式策略开关；在证据出现前不静默丢证明或伪造 B 的证明。
+- 如果后续证据证明 OpenAI 要求证明和账号严格绑定，再把“带证明请求禁止跨账号 failover”设为默认策略；在证据出现前不静默丢证明或伪造 B 的证明。
 
 ### 阶段 4：候选和正式验收
 
-先用 18081 候选，不切正式服务。候选与线上共用 DB/Redis，仍先做迁移门禁和 active request 检查。
+先用 18081 候选，不切正式服务。候选与线上共用 DB/Redis 时，必须关闭或隔离 prewarm、账号状态写入和调度缓存更新；如果无法证明候选只读/隔离，则不能用线上共享 DB/Redis 做 attestation 验证。仍先做迁移门禁和 active request 检查。
 
 ## 6. 测试矩阵
 
@@ -136,6 +144,7 @@ bridge 的每个 HTTP turn 都从下游 WS 连接作用域取得证明上下文�
 
 - managed HTTP、passthrough HTTP、compact：有/无证明，原值、状态和长度一致。
 - `s=0/1/2/3/4`、未知状态、重复 header、超长值、异常字符。
+- malformed 不触发账号切换、同账号无限重试或共享池复用，并返回固定的确定性请求错误。
 - ChatGPT Codex 目标与第三方 base URL、API key、非 Responses path 的隔离。
 - Lite→5.5 与 attestation 同时存在时，证明保持、Lite metadata 仍按既有规则删除。
 - 入站 header 在构造和 failover 后仍未被修改。
@@ -145,6 +154,7 @@ bridge 的每个 HTTP turn 都从下游 WS 连接作用域取得证明上下文�
 - 同作用域相同证明可以复用；不同作用域即使摘要相同也不能复用。
 - 有/无证明、不同证明、不同下游连接之间不能错误复用。
 - `lastAcquire`、prewarm、preferred connection、force-new-connection 不泄露原始值或跨作用域复用。
+- `AttestationScope` 在 acquire、preferred/pinned/least-busy、handshake match、prewarm、eviction 和 close 全路径一致；连接关闭后 scope 清理。
 - 证明变化后必须重新握手，旧握手的 Header 快照不变。
 
 ### 真实候选测试
@@ -166,17 +176,17 @@ attestation_status
 attestation_length
 attestation_malformed
 attestation_scope
-attestation_digest_prefix
+attestation_comparison
 attestation_forwarded
 attestation_account_switch
 attestation_transport
 ```
 
-禁止字段：原始 `x-oai-attestation`、`t`、完整请求头、Authorization、cookie、token。
+禁止字段：原始 `x-oai-attestation`、`t`、稳定 digest prefix、完整请求头、Authorization、cookie、token。短期采样如需比较只使用 keyed HMAC，并设置 TTL、访问权限和 metrics cardinality 上限。
 
 归因顺序：
 
-1. 先看入站是否有证明，以及出站是否保留同一短摘要。
+1. 先看入站是否有证明，以及出站是否保留一致的比较结果；必要时在短期候选采样中核对 keyed HMAC。
 2. 再分 provider HTTP status、重试后 200、客户端取消、本地并发拒绝。
 3. 最后再比较有/无证明请求的成功率、TTFT 和风控错误；不能把单次 503 或 HTTP 200 直接归因于证明。
 
@@ -184,7 +194,7 @@ attestation_transport
 
 适合向官方提 PR 的通用部分：
 
-- HTTP/WS scoped header passthrough。
+- HTTP/WS scoped header passthrough，目标是 `Wei-Shaw/sub2api`；不把 Codex Desktop/app-server 的 DeviceCheck 生成逻辑混入该 PR。
 - 不伪造、不修改、不输出敏感值的测试和文档。
 - 通用的连接作用域隔离，如果能在没有公司账号池语义的情况下独立复现。
 
@@ -194,60 +204,16 @@ attestation_transport
 - 内部 API key、Guard、18081、部署与回滚工具。
 - 公司账号/模型映射、指纹收敛和生产日志口径。
 
-向官方整理贡献分支前，先在本分支完成阶段 0～2 的证据和测试；只有用户明确允许才创建或推送官方 PR。官方 PR 不包含内部运行地址、账号信息、部署材料或原始证明。
+向官方整理贡献分支前，先在本分支完成阶段 0～2 的证据和测试；只有用户明确允许才创建或推送指向 `Wei-Shaw/sub2api` 的官方 PR。`openai/codex` 的 app-server/DeviceCheck 改动属于另一个上游，不能混在同一 PR。官方 PR 不包含内部运行地址、账号信息、部署材料或原始证明。
 
 ## 9. 实施顺序与退出条件
 
 1. 用户评审本方案，确认是否允许阶段 0 观测。
-2. 阶段 0 只读证据达到：至少一批真实 Desktop 请求明确区分有头/无头、HTTP/WS 路径和最终 attempt。
-3. 实现阶段 1，完成构造器与隔离测试。
-4. 实现阶段 2～3，完成连接池/prewarm/bridge 测试。
-5. 使用真实 Desktop 做 18081 候选 E2E；通过后才讨论是否部署。
-6. 每阶段失败都保留候选和测试日志，回退代码提交，不修改账号配置来掩盖问题。
+2. 先定稿 P0 合同：证明上下文与 `Headers/lastAcquire` 分离，downstream scope 全池传递，带证明连接不跨 scope prewarm。
+3. 阶段 0 只读证据达到：至少一批真实 Desktop 请求明确区分有头/无头、HTTP/WS 路径和最终 attempt，并能在可控出口证明外发结果。
+4. 实现阶段 1，完成目标硬门禁、malformed 确定性错误和构造器隔离测试。
+5. 实现阶段 2～3，完成连接池/prewarm/bridge 测试和跨账号一次上限。
+6. 使用真实 Desktop 做隔离候选 E2E；通过后才讨论是否部署。共享 DB/Redis 无法隔离时停止候选。
+7. 每阶段失败都保留候选和测试日志，回退代码提交，不修改账号配置来掩盖问题。
 
 完成标准不是“header 已加入白名单”，而是：真实入站证明在目标路径原值到达上游；无证明和无关目标不被污染；WS 连接不跨作用域复用；账号切换风险有可观测证据；业务终态和上游归因可回查。
-
-## 10. 子 agent review 结论（2026-09-11）
-
-独立只读 review 结论：总体方向和协议边界合理，但原方案不能直接进入编码，必须先处理以下问题。
-
-### P0：WS 池不能把证明放进现有 Headers/lastAcquire
-
-当前 `openAIWSAcquireRequest.Headers` 会被 `cloneOpenAIWSAcquireRequest` 深拷贝；`recordLastSuccessfulAcquire` 将它写入账号级 `lastAcquire`，`ensureTargetIdleAsync`/`prewarmConns` 随后可用这份请求重新拨号。若直接把 `x-oai-attestation` 放入 Headers，原始证明会进入账号级预热状态，可能跨下游上下文重拨。
-
-实施前必须把证明上下文与普通握手 Headers 分离，至少满足：
-
-- 原始证明不进入 `lastAcquire`、账号级 prewarm、数据库、Redis 或长期连接元数据。
-- 带证明的请求默认关闭跨下游 prewarm；若要支持预热，必须由同一个下游作用域通过 `HeadersFactory` 重新提供当前证明，不能从缓存 header 重拨。
-- 清理路径要覆盖 acquire 失败、连接关闭、客户端断开、failover 和 pool eviction。
-
-### P0：摘要不能代替下游连接作用域
-
-当前 `Acquire` 计算 handshake compatibility 后，preferred/pinned/least-busy 等多个选择路径都只比较 compatibility；`sameOpenAIWSPrewarmTarget` 也只比较 URL、proxy 和 compatibility。即使把 digest 加入 key，也无法满足“不同 scope 即使摘要相同也不能复用”。
-
-必须新增不可伪造的 downstream scope ID，并贯穿：
-
-```text
-ingress WS
-  → openAIWSAcquireRequest
-  → openAIWSConn
-  → preferred/pinned/least-busy pick
-  → handshake match
-  → prewarm target
-  → eviction/close
-```
-
-无 scope 但有证明时，保守策略是强制新建、禁止进入公共 idle pool；不能用空 scope 代表所有下游连接。连接关闭时清理 scope 关联，scope 不得作为长期设备 ID。
-
-### P1：其他必须在实现前定稿的点
-
-- 透传 helper 必须对最终 ChatGPT Codex OAuth/SetupToken Responses URL 做硬门禁；不能仅把 header 加到全局白名单，否则会污染 API key、第三方 base URL 和无关路径。
-- 重复 header（包括大小写变体）、长度超限和控制字符要定义成独立 malformed 类别；不得自动触发账号切换或无限重试。Go `Header.Get` 不足以检测大小写变体和多值，需要遍历原始 map。
-- A→B failover 不能无限带着同一证明尝试。需要一次上限和明确策略：区分证明/认证类 401/403 与 provider 503；疑似证明绑定失败时停止切号并保留证据；已有语义输出后继续遵守禁止 replay 的边界。
-- 长期日志不应保存稳定 digest prefix；默认只记录“入站/出站是否一致”，短期采样用 keyed HMAC 和明确 TTL/访问权限，限制 metrics cardinality。
-- 阶段 0 虽然不改业务数据，也会改日志；需定义采样率、字段 TTL、只读日志位置和真实 Desktop 入站/上游出站证据获取方式。不能只靠 Sub2API 自己的日志断言上游收到。
-- 18081 与线上共用 DB/Redis；候选运行前要明确只读/隔离策略，禁止 prewarm、账号状态或调度缓存污染线上。
-- 记录官方协议对应的 commit/version/date；补充未知 envelope 的 best-effort 解析规则、compact bridge 每 turn 的 scope 继承、连接关闭后的 context 清理和 metrics cardinality 上限。
-- 官方贡献目标要明确区分 `Wei-Shaw/sub2api` 与 `openai/codex`：Sub2API 的 header/连接池适配才可能进入前者；Codex app-server/DeviceCheck 变化属于后者，不能混在同一 PR。
-
-在这些 P0/P1 未写成实现合同前，不应开始加入白名单或修改 WS pool。该 review 不改变本方案“先观测、不伪造、分阶段候选”的总体结论。
