@@ -137,7 +137,10 @@ func observeOpenAIAttestationHTTP(c *gin.Context, account *Account, targetURL st
 			}
 		}
 	}
-	slog.Debug("openai_attestation_observed", fields...)
+	// Observation is intentionally emitted at Info: the staged observe mode is
+	// the evidence path, and production defaults to off so this does not create
+	// a normal-request log stream. The fields contain no opaque proof material.
+	slog.Info("openai_attestation_observed", fields...)
 }
 
 func isOpenAIAttestationCodexTarget(rawURL string) bool {
