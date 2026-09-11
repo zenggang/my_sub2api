@@ -206,6 +206,17 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Account: account,
 		WSURL:   wsURL,
 		Headers: wsHeaders,
+		Attestation: resolveOpenAIWSAttestationContext(
+			s.cfg,
+			account,
+			func() http.Header {
+				if c != nil && c.Request != nil {
+					return c.Request.Header
+				}
+				return nil
+			}(),
+			newOpenAIWSAttestationScope(),
+		),
 		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
 			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
 		},

@@ -2050,6 +2050,84 @@ func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 
 type openAIWSFakeDialer struct{}
 
+type openAIWSAttestationCaptureDialer struct {
+	mu      sync.Mutex
+	headers []http.Header
+}
+
+func (d *openAIWSAttestationCaptureDialer) Dial(ctx context.Context, wsURL string, headers http.Header, proxyURL string) (openAIWSClientConn, int, http.Header, error) {
+	d.mu.Lock()
+	d.headers = append(d.headers, cloneHeader(headers))
+	d.mu.Unlock()
+	return &openAIWSFakeConn{}, 0, nil, nil
+}
+
+func (d *openAIWSAttestationCaptureDialer) Headers() []http.Header {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result := make([]http.Header, len(d.headers))
+	for i := range d.headers {
+		result[i] = cloneHeader(d.headers[i])
+	}
+	return result
+}
+
+func TestOpenAIWSPool_AttestationScopeIsolatedAndRawValueIsNotPrewarmed(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIAttestation.Mode = config.OpenAIAttestationModeAll
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 4
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	pool := newOpenAIWSConnPool(cfg)
+	dialer := &openAIWSAttestationCaptureDialer{}
+	pool.setClientDialerForTest(dialer)
+	defer pool.Close()
+
+	account := &Account{ID: 913, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	base := openAIWSAcquireRequest{
+		Account: account,
+		WSURL:   "wss://chatgpt.com/backend-api/codex/responses",
+		Headers: http.Header{openAIAttestationHeader: []string{"raw-must-not-be-pooled"}},
+		Attestation: openAIWSAttestationContext{
+			Value: `{"v":1,"s":0,"t":"v1.scope-a"}`,
+			Scope: "scope-a",
+		},
+	}
+	first, err := pool.Acquire(context.Background(), base)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	first.Release()
+
+	ap, ok := pool.getAccountPool(account.ID)
+	require.True(t, ok)
+	ap.mu.Lock()
+	require.NotNil(t, ap.lastAcquire)
+	require.Empty(t, ap.lastAcquire.Attestation.Value)
+	require.Equal(t, "scope-a", ap.lastAcquire.Attestation.Scope)
+	require.Empty(t, ap.lastAcquire.Headers.Get(openAIAttestationHeader))
+	ap.mu.Unlock()
+
+	gotHeaders := dialer.Headers()
+	require.Len(t, gotHeaders, 1)
+	require.Equal(t, base.Attestation.Value, gotHeaders[0].Get(openAIAttestationHeader))
+
+	second, err := pool.Acquire(context.Background(), base)
+	require.NoError(t, err)
+	require.True(t, second.Reused(), "same downstream scope should reuse its own connection")
+	second.Release()
+
+	other := base
+	other.Attestation.Scope = "scope-b"
+	third, err := pool.Acquire(context.Background(), other)
+	require.NoError(t, err)
+	require.False(t, third.Reused(), "different downstream scope must not reuse the attested connection")
+	third.Release()
+	require.Len(t, dialer.Headers(), 2)
+
+	pool.ensureTargetIdleAsync(account.ID)
+	time.Sleep(20 * time.Millisecond)
+	require.Len(t, dialer.Headers(), 2, "attested lastAcquire must not trigger raw-proof prewarm")
+}
+
 func (d *openAIWSFakeDialer) Dial(
 	ctx context.Context,
 	wsURL string,
