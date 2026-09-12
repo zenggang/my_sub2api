@@ -79,6 +79,53 @@ git merge main
 
 得到用户对该贡献的明确允许后，才推送用于公开贡献的分支并创建指向 `Wei-Shaw/sub2api:main` 的 PR；草稿 PR 也遵守这条规则。普通开发任务、测试完成或推送我们自己的 release，都不自动授权向官方提交 PR。CLA 签署以及向官方发评论也不能代替用户自行确认。
 
+### 实际发 PR 操作清单
+
+按以下顺序执行，避免把私有维护内容带入官方 PR：
+
+```bash
+# 1. 从官方主干建立干净贡献 worktree
+git fetch upstream main
+git worktree add /tmp/my_sub2api-contribute-<topic> upstream/main
+cd /tmp/my_sub2api-contribute-<topic>
+git switch -c contribute/<topic>
+
+# 2. 只移植已审核的通用提交，并重新运行验证
+git cherry-pick <reviewed-commit>
+go test ./... -count=1
+
+# 3. 核对贡献边界与作者身份
+git diff upstream/main...HEAD --stat
+git diff upstream/main...HEAD
+git show -s --format='%H%n%an <%ae>' HEAD
+
+# 4. 经过用户明确允许后推送贡献分支
+git push -u origin contribute/<topic>
+```
+
+然后在 GitHub 的官方仓库页面选择 `Wei-Shaw/sub2api:main` 与 `zenggang/my_sub2api:contribute/<topic>` 创建 PR。PR 正文应写清背景、问题、解决方式、影响范围和测试结果，不写私人账号、公司信息、内网地址、部署细节或原始设备证明。
+
+### CLA 处理
+
+创建 PR 后先看 CLA Assistant 的结果。若提示作者邮箱未关联 GitHub：
+
+1. 用 `git show -s --format='%an <%ae>' HEAD` 查提交作者邮箱；
+2. 在 GitHub Settings → Emails 确认该邮箱已添加并验证；
+3. 若邮箱不正确，在贡献分支上修正最后一个贡献提交的 author 后执行 `git push --force-with-lease`，记录新的 SHA；
+4. 在 PR 下回复 `recheck` 重新触发检查；
+5. 若机器人仍要求签署，只有在用户明确授权后回复：`I have read the CLA Document and I hereby sign the CLA`；
+6. 等待 CLA 检查成功，再判断其他检查和维护者批准状态。
+
+邮箱必须以 GitHub 账号设置中已验证的地址为准；不要猜测、替换或公开其他邮箱。修正作者邮箱会改写贡献分支提交 SHA，必须在 PR 中核对 force-push 记录和最终提交。
+
+### PR 提交后的验收
+
+- PR 状态为 Open，目标为官方 `main`，无冲突；
+- Files changed 只包含已审核的通用代码和测试；
+- CLA Assistant 显示 `All contributors have signed the CLA`；
+- 代码检查已完成，若显示 fork workflows awaiting approval，记录为维护者侧权限等待，不当作代码失败；
+- 保存 PR 编号、URL、最终提交 SHA、测试结果和未完成的维护者动作。
+
 官方 PR 不包含本 fork 的工作流规则、内网地址、账号配置、部署记录、密钥或原始设备证明。官方采纳后，通过正常 `main` 同步和 `release` 集成流程吸收，核对行为后再收敛重复补丁。
 
 ## 5. 发布边界
