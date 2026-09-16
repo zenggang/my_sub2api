@@ -36,7 +36,7 @@ def main():
     for key in ('GOROOT', 'GOOS', 'GOARCH'):
         env.pop(key, None)
     go, pnpm = env['GO_BIN'], env['PNPM_BIN']
-    version = '0.2.4-fork.' + commit[:12]
+    version = git('show', f'{commit}:backend/cmd/server/VERSION').strip() + '-fork.' + commit[:12]
     with (work/'build.log').open('w') as log:
         def run(args, cwd=source, extra=None):
             log.write('COMMAND '+repr(args)+'\n'); log.flush()
