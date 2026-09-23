@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
@@ -348,8 +349,12 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		}, nil
 	}
 
-	// Generate unique request ID for this slot
+	// Keep the native request ID unique while making the account slot self-describing
+	// for the independent live observation view. The scheduler limit remains unchanged.
 	requestID := generateRequestID()
+	if userID, ok := ctx.Value(ctxkey.UserID).(int64); ok && userID > 0 {
+		requestID += "|u:" + strconv.FormatInt(userID, 10)
+	}
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
 	if err != nil {
