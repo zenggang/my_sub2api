@@ -108,6 +108,29 @@ func (h *OpsHandler) GetUserConcurrencyStats(c *gin.Context) {
 	response.Success(c, payload)
 }
 
+// GetAccountSlotObservation returns the independent live account slot
+// collection used by the account observation dashboard.
+// GET /api/v1/admin/ops/account-slot-observation
+func (h *OpsHandler) GetAccountSlotObservation(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	accounts, collectedAt, err := h.opsService.GetAccountSlotObservation(c.Request.Context())
+	if err != nil {
+		if isOpsRealtimeRequestCanceled(c, err) {
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	payload := gin.H{"accounts": accounts}
+	if collectedAt != nil {
+		payload["timestamp"] = collectedAt.UTC()
+	}
+	response.Success(c, payload)
+}
+
 // GetAccountAvailability returns account availability statistics.
 // GET /api/v1/admin/ops/account-availability
 //

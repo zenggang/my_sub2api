@@ -406,3 +406,15 @@ func (s *OpsService) GetUserConcurrencyStats(ctx context.Context) (map[int64]*Us
 
 	return result, &collectedAt, nil
 }
+
+// GetAccountSlotObservation returns the process-local account slot collection.
+// It is intentionally separate from GetConcurrencyStats, which reads the
+// scheduler's Redis-backed aggregates for the legacy Ops views.
+func (s *OpsService) GetAccountSlotObservation(ctx context.Context) (map[int64]AccountSlotObservation, *time.Time, error) {
+	if s == nil || s.concurrencyService == nil {
+		collectedAt := time.Now().UTC()
+		return map[int64]AccountSlotObservation{}, &collectedAt, nil
+	}
+	accounts, collectedAt := s.concurrencyService.SnapshotAccountSlotObservation()
+	return accounts, &collectedAt, nil
+}

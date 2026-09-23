@@ -230,7 +230,8 @@ const (
 
 // ConcurrencyService 管理账号和用户的并发限制。
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache       ConcurrencyCache
+	observation *accountSlotObservationStore
 
 	accountLoadCacheTTL atomic.Int64
 	accountLoadCacheMu  sync.RWMutex
@@ -247,6 +248,7 @@ type cachedAccountLoadBatch struct {
 func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	svc := &ConcurrencyService{
 		cache:            cache,
+		observation:      newAccountSlotObservationStore(),
 		accountLoadCache: make(map[string]cachedAccountLoadBatch),
 	}
 	svc.SetAccountLoadBatchCacheTTL(defaultAccountLoadBatchCacheTTL)
@@ -341,20 +343,25 @@ type UserLoadInfo struct {
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
+	observe := func() func() {
+		if s == nil {
+			return func() {}
+		}
+		userID := int64(0)
+		if ctx != nil {
+			userID, _ = ctx.Value(ctxkey.UserID).(int64)
+		}
+		return s.observation.acquire(accountID, userID)
+	}
 	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
 		return &AcquireResult{
 			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
+			ReleaseFunc: observe(),
 		}, nil
 	}
 
-	// Keep the native request ID unique while making the account slot self-describing
-	// for the independent live observation view. The scheduler limit remains unchanged.
 	requestID := generateRequestID()
-	if userID, ok := ctx.Value(ctxkey.UserID).(int64); ok && userID > 0 {
-		requestID += "|u:" + strconv.FormatInt(userID, 10)
-	}
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
 	if err != nil {
@@ -362,9 +369,11 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}
 
 	if acquired {
+		observedRelease := observe()
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
+				observedRelease()
 				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
@@ -531,19 +540,25 @@ func (s *ConcurrencyService) DecrementWaitCount(ctx context.Context, userID int6
 // IncrementAccountWaitCount increments the wait queue counter for an account.
 func (s *ConcurrencyService) IncrementAccountWaitCount(ctx context.Context, accountID int64, maxWait int) (bool, error) {
 	if s.cache == nil {
+		s.observation.incrementWaiting(accountID)
 		return true, nil
 	}
 
 	result, err := s.cache.IncrementAccountWaitCount(ctx, accountID, maxWait)
 	if err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: increment wait count failed for account %d: %v", accountID, err)
+		s.observation.incrementWaiting(accountID)
 		return true, nil
+	}
+	if result {
+		s.observation.incrementWaiting(accountID)
 	}
 	return result, nil
 }
 
 // DecrementAccountWaitCount decrements the wait queue counter for an account.
 func (s *ConcurrencyService) DecrementAccountWaitCount(ctx context.Context, accountID int64) {
+	s.observation.decrementWaiting(accountID)
 	if s.cache == nil {
 		return
 	}
