@@ -107,7 +107,7 @@ func TestAccountHealthProbeConcatenatedStreamEvents(t *testing.T) {
 	}{
 		{name: "delta and completed", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}` + "\n\n", firstToken: true},
 		{name: "failure after completed on same line", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}{"type":"response.failed","response":{"error":{"code":"server_error"}}}` + "\n\n", wantError: "Upstream stream failed (server_error)", firstToken: true},
-		{name: "failure after completed on next line", body: `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" + `data: {"type":"response.completed"}` + "\n\n" + `data: {"type":"response.failed"}` + "\n\n", wantError: "Upstream stream failed", firstToken: true},
+		{name: "completed ends before next line", body: `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" + `data: {"type":"response.completed"}` + "\n\n" + `data: {"type":"response.failed"}` + "\n\n", firstToken: true},
 		{name: "malformed tail after completed", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}{bad` + "\n\n", wantError: "Invalid upstream stream event"},
 		{name: "completed then done", body: `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" + `data: {"type":"response.completed"}` + "\n\n" + "data: [DONE]\n\n", firstToken: true},
 	}
@@ -116,6 +116,43 @@ func TestAccountHealthProbeConcatenatedStreamEvents(t *testing.T) {
 			first, message := readAccountHealthProbeStream(strings.NewReader(tc.body), time.Now())
 			require.Equal(t, tc.wantError, message)
 			require.Equal(t, tc.firstToken, first != nil)
+		})
+	}
+}
+
+func TestAccountHealthProbeCompletionDoesNotWaitForStreamClose(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantError  string
+		firstToken bool
+	}{
+		{name: "text completed", body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\"}\n\n", firstToken: true},
+		{name: "empty completed", body: "data: {\"type\":\"response.completed\"}\n\n", wantError: "Upstream completed without text"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			type probeResult struct {
+				firstToken *int64
+				message    string
+			}
+			resultCh := make(chan probeResult, 1)
+			go func() {
+				first, message := readAccountHealthProbeStream(reader, time.Now())
+				resultCh <- probeResult{firstToken: first, message: message}
+			}()
+			_, err := io.WriteString(writer, tc.body)
+			require.NoError(t, err)
+			select {
+			case result := <-resultCh:
+				require.Equal(t, tc.wantError, result.message)
+				require.Equal(t, tc.firstToken, result.firstToken != nil)
+			case <-time.After(2 * time.Second):
+				t.Fatal("health probe waited for stream close after response.completed")
+			}
 		})
 	}
 }

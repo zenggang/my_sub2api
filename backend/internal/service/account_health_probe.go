@@ -253,9 +253,6 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
 		if bytes.Equal(data, []byte("[DONE]")) {
-			if completed {
-				break
-			}
 			return firstTokenMS, "Upstream stream ended before response.completed"
 		}
 		// The shared decoder accepts only complete concatenated JSON events; malformed tails fail closed.
@@ -311,15 +308,16 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 				return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", code)
 			}
 		}
+		// Completion is terminal after every document on this data line has been checked.
+		if completed {
+			if firstTokenMS == nil {
+				return nil, "Upstream completed without text"
+			}
+			return firstTokenMS, ""
+		}
 	}
 	if scanner.Err() != nil {
 		return firstTokenMS, "Upstream stream read failed"
-	}
-	if completed {
-		if firstTokenMS == nil {
-			return nil, "Upstream completed without text"
-		}
-		return firstTokenMS, ""
 	}
 	return firstTokenMS, "Upstream stream ended before completion"
 }
