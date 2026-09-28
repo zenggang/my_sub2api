@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,13 +24,14 @@ const accountHealthProbeTimeout = 90 * time.Second
 var accountHealthProbeModelID = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 
 type AccountHealthProbeResult struct {
-	AccountID          int64  `json:"account_id"`
-	ModelID            string `json:"model_id"`
-	Success            bool   `json:"success"`
-	UpstreamStatusCode *int   `json:"upstream_status_code"`
-	Error              string `json:"error"`
-	FirstTokenMS       *int64 `json:"first_token_ms"`
-	DurationMS         int64  `json:"duration_ms"`
+	AccountID             int64  `json:"account_id"`
+	ModelID               string `json:"model_id"`
+	Success               bool   `json:"success"`
+	UpstreamStatusCode    *int   `json:"upstream_status_code"`
+	StreamErrorStatusCode *int   `json:"stream_error_status_code"`
+	Error                 string `json:"error"`
+	FirstTokenMS          *int64 `json:"first_token_ms"`
+	DurationMS            int64  `json:"duration_ms"`
 }
 
 // ProbeAccountHealth sends one fixed-account text request without changing account runtime state.
@@ -57,12 +59,17 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 			if result.UpstreamStatusCode != nil {
 				status = *result.UpstreamStatusCode
 			}
+			streamErrorStatus := 0
+			if result.StreamErrorStatusCode != nil {
+				streamErrorStatus = *result.StreamErrorStatusCode
+			}
 			firstTokenMS := int64(0)
 			if result.FirstTokenMS != nil {
 				firstTokenMS = *result.FirstTokenMS
 			}
 			slog.Info("account_health_probe_complete", "account_id", accountID, "model_id", result.ModelID,
-				"success", result.Success, "upstream_status_code", status, "has_first_token_ms", result.FirstTokenMS != nil,
+				"success", result.Success, "upstream_status_code", status, "stream_error_status_code", streamErrorStatus,
+				"has_first_token_ms", result.FirstTokenMS != nil,
 				"first_token_ms", firstTokenMS,
 				"duration_ms", result.DurationMS, "error", result.Error)
 		}
@@ -189,7 +196,7 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 		result.Error = accountHealthProbeHTTPError(resp.StatusCode, body)
 		return result, nil
 	}
-	result.FirstTokenMS, result.Error = readAccountHealthProbeStream(resp.Body, startedAt)
+	result.FirstTokenMS, result.StreamErrorStatusCode, result.Error = readAccountHealthProbeStream(resp.Body, startedAt)
 	result.DurationMS = time.Since(startedAt).Milliseconds()
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		result.Error = "Upstream request timed out"
@@ -222,13 +229,37 @@ func accountHealthProbeHTTPError(status int, body []byte) string {
 func accountHealthProbeSafeError(message, code string) string {
 	// Upstream error.code is untrusted and may contain token-like data despite safe-looking syntax.
 	switch code {
-	case "server_error", "invalid_token", "rate_limit_exceeded", "invalid_request_error", "insufficient_quota", "authentication_error", "permission_denied", "model_not_found":
+	case "server_error", "server_is_overloaded", "slow_down", "invalid_token", "rate_limit_exceeded", "invalid_request_error", "insufficient_quota", "authentication_error", "permission_denied", "model_not_found":
 		return message + " (" + code + ")"
 	}
 	return message
 }
 
-func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, string) {
+func accountHealthProbeExplicitStreamStatus(event gjson.Result) *int {
+	// Only an explicit numeric status in a failed event is reportable as 503/504; semantic error names are not HTTP statuses.
+	for _, path := range openAIStreamErrorStatusPaths {
+		if status := accountHealthProbeNumericStatus(event.Get(path).String()); status != nil {
+			return status
+		}
+	}
+	for _, path := range []string{"response.error.code", "error.code", "code"} {
+		if status := accountHealthProbeNumericStatus(event.Get(path).String()); status != nil {
+			return status
+		}
+	}
+	return nil
+}
+
+func accountHealthProbeNumericStatus(raw string) *int {
+	raw = strings.TrimSpace(raw)
+	status, err := strconv.Atoi(raw)
+	if err != nil || status < 400 || status > 599 || strconv.Itoa(status) != raw {
+		return nil
+	}
+	return &status
+}
+
+func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, *int, string) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	var firstTokenMS *int64
@@ -253,7 +284,7 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
 		if bytes.Equal(data, []byte("[DONE]")) {
-			return firstTokenMS, "Upstream stream ended before response.completed"
+			return firstTokenMS, nil, "Upstream stream ended before response.completed"
 		}
 		// The shared decoder accepts only complete concatenated JSON events; malformed tails fail closed.
 		documents, repaired := splitOpenAIConcatenatedJSONDocuments(data)
@@ -262,11 +293,11 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 		}
 		for _, document := range documents {
 			if !gjson.ValidBytes(document) {
-				return firstTokenMS, "Invalid upstream stream event"
+				return firstTokenMS, nil, "Invalid upstream stream event"
 			}
 			event := gjson.ParseBytes(document)
 			if event.Get("error").IsObject() {
-				return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", event.Get("error.code").String())
+				return firstTokenMS, accountHealthProbeExplicitStreamStatus(event), accountHealthProbeSafeError("Upstream stream failed", event.Get("error.code").String())
 			}
 			switch event.Get("type").String() {
 			case "response.output_text.delta":
@@ -288,10 +319,10 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 				}
 			case "response.completed", "response.done":
 				if status := event.Get("response.status").String(); status != "" && status != "completed" {
-					return firstTokenMS, "Upstream response did not complete"
+					return firstTokenMS, accountHealthProbeExplicitStreamStatus(event), "Upstream response did not complete"
 				}
 				if event.Get("response.error").IsObject() {
-					return firstTokenMS, accountHealthProbeSafeError("Upstream response failed", event.Get("response.error.code").String())
+					return firstTokenMS, accountHealthProbeExplicitStreamStatus(event), accountHealthProbeSafeError("Upstream response failed", event.Get("response.error.code").String())
 				}
 				if !completed {
 					for _, item := range event.Get("response.output").Array() {
@@ -305,19 +336,19 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 				if code == "" {
 					code = event.Get("error.code").String()
 				}
-				return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", code)
+				return firstTokenMS, accountHealthProbeExplicitStreamStatus(event), accountHealthProbeSafeError("Upstream stream failed", code)
 			}
 		}
 		// Completion is terminal after every document on this data line has been checked.
 		if completed {
 			if firstTokenMS == nil {
-				return nil, "Upstream completed without text"
+				return nil, nil, "Upstream completed without text"
 			}
-			return firstTokenMS, ""
+			return firstTokenMS, nil, ""
 		}
 	}
 	if scanner.Err() != nil {
-		return firstTokenMS, "Upstream stream read failed"
+		return firstTokenMS, nil, "Upstream stream read failed"
 	}
-	return firstTokenMS, "Upstream stream ended before completion"
+	return firstTokenMS, nil, "Upstream stream ended before completion"
 }

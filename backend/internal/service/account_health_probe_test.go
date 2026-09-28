@@ -80,7 +80,7 @@ func TestAccountHealthProbeFirstTokenNeedsNonWhitespaceText(t *testing.T) {
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\"}\n\n")
 		_ = writer.Close()
 	}()
-	first, message := readAccountHealthProbeStream(reader, time.Now())
+	first, _, message := readAccountHealthProbeStream(reader, time.Now())
 	require.Empty(t, message)
 	require.NotNil(t, first)
 	require.GreaterOrEqual(t, *first, int64(20))
@@ -93,7 +93,7 @@ func TestAccountHealthProbeCountsTextFromOutputItemBeforeCompleted(t *testing.T)
 		_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\"}\n\n")
 		_ = writer.Close()
 	}()
-	first, message := readAccountHealthProbeStream(reader, time.Now())
+	first, _, message := readAccountHealthProbeStream(reader, time.Now())
 	require.Empty(t, message)
 	require.NotNil(t, first)
 }
@@ -113,7 +113,7 @@ func TestAccountHealthProbeConcatenatedStreamEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			first, message := readAccountHealthProbeStream(strings.NewReader(tc.body), time.Now())
+			first, _, message := readAccountHealthProbeStream(strings.NewReader(tc.body), time.Now())
 			require.Equal(t, tc.wantError, message)
 			require.Equal(t, tc.firstToken, first != nil)
 		})
@@ -141,7 +141,7 @@ func TestAccountHealthProbeCompletionDoesNotWaitForStreamClose(t *testing.T) {
 			}
 			resultCh := make(chan probeResult, 1)
 			go func() {
-				first, message := readAccountHealthProbeStream(reader, time.Now())
+				first, _, message := readAccountHealthProbeStream(reader, time.Now())
 				resultCh <- probeResult{firstToken: first, message: message}
 			}()
 			_, err := io.WriteString(writer, tc.body)
@@ -159,15 +159,21 @@ func TestAccountHealthProbeCompletionDoesNotWaitForStreamClose(t *testing.T) {
 
 func TestAccountHealthProbeFailuresKeepAccountStateAndSecretsPrivate(t *testing.T) {
 	cases := []struct {
-		name       string
-		status     int
-		body       string
-		wantError  string
-		firstToken bool
+		name         string
+		status       int
+		body         string
+		wantError    string
+		firstToken   bool
+		streamStatus int
 	}{
 		{name: "empty completed", status: 200, body: "data: {\"type\":\"response.completed\"}\n\n", wantError: "Upstream completed without text"},
 		{name: "truncated after text", status: 200, body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n", wantError: "Upstream stream ended before completion", firstToken: true},
 		{name: "stream error", status: 200, body: "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"access_token=secret\"}}}\n\n", wantError: "Upstream stream failed (server_error)"},
+		{name: "stream 503", status: 200, body: `data: {"type":"response.failed","response":{"error":{"status_code":503,"code":"server_is_overloaded","message":"access_token=secret"}}}` + "\n\n", wantError: "Upstream stream failed (server_is_overloaded)", streamStatus: 503},
+		{name: "stream 504", status: 200, body: `data: {"type":"error","error":{"status":"504","code":"server_error"}}` + "\n\n", wantError: "Upstream stream failed (server_error)", streamStatus: 504},
+		{name: "numeric stream error code", status: 200, body: `data: {"type":"response.failed","response":{"error":{"code":"503"}}}` + "\n\n", wantError: "Upstream stream failed", streamStatus: 503},
+		{name: "semantic code without numeric status", status: 200, body: `data: {"type":"response.failed","response":{"error":{"code":"slow_down"}}}` + "\n\n", wantError: "Upstream stream failed (slow_down)"},
+		{name: "invalid stream status", status: 200, body: `data: {"type":"response.failed","response":{"error":{"status_code":200,"code":"server_error"}}}` + "\n\n", wantError: "Upstream stream failed (server_error)"},
 		{name: "401", status: 401, body: `{"error":{"code":"invalid_token","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 401 (invalid_token)"},
 		{name: "429", status: 429, body: `{"error":{"code":"rate_limit_exceeded","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 429 (rate_limit_exceeded)"},
 		{name: "untrusted HTTP error code", status: 503, body: `{"error":{"code":"sk-test-token-123","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 503"},
@@ -185,6 +191,11 @@ func TestAccountHealthProbeFailuresKeepAccountStateAndSecretsPrivate(t *testing.
 			require.NoError(t, err)
 			require.False(t, result.Success)
 			require.Equal(t, tc.status, *result.UpstreamStatusCode)
+			if tc.streamStatus == 0 {
+				require.Nil(t, result.StreamErrorStatusCode)
+			} else {
+				require.Equal(t, tc.streamStatus, *result.StreamErrorStatusCode)
+			}
 			require.Equal(t, tc.wantError, result.Error)
 			require.NotContains(t, result.Error, "secret")
 			require.NotContains(t, result.Error, "sk-test-token-123")
