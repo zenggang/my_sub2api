@@ -4,7 +4,9 @@ umask 077
 HERE=$(cd "$(dirname "$0")" && pwd)
 directory=$(readlink -f "${1:?release directory required}")
 key_id=${2:?dedicated smoke API key ID required}
+astra_response_model=${3:-gpt-6-astra}
 [[ "$key_id" =~ ^[0-9]+$ ]]
+[[ "$astra_response_model" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
 case "$directory" in /data/sub2api-patched/releases/*) ;; *) exit 64;; esac
 test -f "$directory/manifest.json"
 live_sha=$(sha256sum /opt/sub2api/sub2api | awk '{print $1}')
@@ -29,10 +31,12 @@ for i in $(seq 1 60); do
 done
 test "$healthy" = true
 for model in gpt-5.5 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-6-astra; do
-  /usr/bin/python /data/sub2api-patched/tools/smoke-gateway.py 18081 "$model" "$key_id" | tee "$evidence/$model.jsonl"
+  expected_model=$model
+  # The dedicated key may route the Astra alias to a different upstream model.
+  if [ "$model" = gpt-6-astra ]; then expected_model=$astra_response_model; fi
+  /usr/bin/python "$HERE/smoke-gateway.py" 18081 "$model" "$key_id" "$expected_model" | tee "$evidence/$model.jsonl"
 done
 test "$(sha256sum /opt/sub2api/sub2api | awk '{print $1}')" = "$live_sha"
 test "$(sha256sum "$directory/sub2api" | awk '{print $1}')" = "$candidate_sha"
 sha256sum "$directory/sub2api" | awk '{print $1}' > "$directory/SMOKE_VERIFIED.sha256"
 echo 'SMOKE_VERIFIED: five models including GPT-5.5 with Lite, tool invocation plus follow-up; production binary unchanged'
-
