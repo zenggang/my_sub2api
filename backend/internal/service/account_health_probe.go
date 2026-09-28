@@ -21,7 +21,6 @@ import (
 const accountHealthProbeTimeout = 90 * time.Second
 
 var accountHealthProbeModelID = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
-var accountHealthProbeErrorCode = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 type AccountHealthProbeResult struct {
 	AccountID          int64  `json:"account_id"`
@@ -40,8 +39,8 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 	if s == nil || s.accountRepo == nil {
 		return result, infraerrors.ServiceUnavailable("HEALTH_PROBE_UNAVAILABLE", "Account health probe is unavailable")
 	}
-	if !accountHealthProbeModelID.MatchString(result.ModelID) || !isAccountHealthProbeTextModel(result.ModelID) {
-		return result, infraerrors.BadRequest("INVALID_HEALTH_PROBE_MODEL", "A text model_id is required")
+	if !accountHealthProbeModelID.MatchString(result.ModelID) {
+		return result, infraerrors.BadRequest("INVALID_HEALTH_PROBE_MODEL", "A valid model_id is required")
 	}
 
 	account, err := s.accountRepo.GetByID(ctx, accountID)
@@ -51,17 +50,6 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 	if err != nil {
 		return result, infraerrors.InternalServer("HEALTH_PROBE_ACCOUNT_LOAD_FAILED", "Failed to load account")
 	}
-	if !account.IsOpenAIOAuthLike() {
-		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_ACCOUNT", "OpenAI OAuth text accounts only")
-	}
-	if !account.IsModelSupported(result.ModelID) {
-		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_MODEL", "Model is not available on this account")
-	}
-	upstreamModel := account.GetMappedModel(result.ModelID)
-	if !isAccountHealthProbeTextModel(upstreamModel) {
-		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_MODEL", "Mapped model must be a text model")
-	}
-
 	// A health probe is observational even for disabled or cooling accounts; keep the selected row and never schedule another account.
 	defer func() {
 		if err == nil {
@@ -79,6 +67,22 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 				"duration_ms", result.DurationMS, "error", result.Error)
 		}
 	}()
+	// Synthetic UI fixtures carry placeholder credentials and cannot establish real upstream health.
+	if account.IsSyntheticUITest() {
+		result.Error = "Synthetic test account cannot be health-probed"
+		return result, nil
+	}
+	if !account.IsOpenAIOAuthLike() {
+		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_ACCOUNT", "OpenAI OAuth text accounts only")
+	}
+	if !account.IsModelSupported(result.ModelID) {
+		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_MODEL", "Model is not available on this account")
+	}
+	// Passthrough ignores legacy model_mapping, matching the model sent by normal account routing.
+	upstreamModel := result.ModelID
+	if !account.IsOpenAIPassthroughEnabled() {
+		upstreamModel = account.GetMappedModel(result.ModelID)
+	}
 
 	credentialAccount := account
 	if account.IsCredentialShadow() {
@@ -216,7 +220,9 @@ func accountHealthProbeHTTPError(status int, body []byte) string {
 }
 
 func accountHealthProbeSafeError(message, code string) string {
-	if accountHealthProbeErrorCode.MatchString(code) {
+	// Upstream error.code is untrusted and may contain token-like data despite safe-looking syntax.
+	switch code {
+	case "server_error", "invalid_token", "rate_limit_exceeded", "invalid_request_error", "insufficient_quota", "authentication_error", "permission_denied", "model_not_found":
 		return message + " (" + code + ")"
 	}
 	return message
@@ -226,6 +232,7 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	var firstTokenMS *int64
+	completed := false
 	markText := func(text string) {
 		if firstTokenMS == nil && strings.TrimSpace(text) != "" {
 			ms := time.Since(startedAt).Milliseconds()
@@ -246,52 +253,73 @@ func readAccountHealthProbeStream(body io.Reader, startedAt time.Time) (*int64, 
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
 		if bytes.Equal(data, []byte("[DONE]")) {
+			if completed {
+				break
+			}
 			return firstTokenMS, "Upstream stream ended before response.completed"
 		}
-		if !gjson.ValidBytes(data) {
-			return firstTokenMS, "Invalid upstream stream event"
+		// The shared decoder accepts only complete concatenated JSON events; malformed tails fail closed.
+		documents, repaired := splitOpenAIConcatenatedJSONDocuments(data)
+		if !repaired {
+			documents = [][]byte{data}
 		}
-		event := gjson.ParseBytes(data)
-		if event.Get("error").IsObject() {
-			return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", event.Get("error.code").String())
-		}
-		switch event.Get("type").String() {
-		case "response.output_text.delta":
-			markText(event.Get("delta").String())
-		case "response.output_text.done":
-			markText(event.Get("text").String())
-		case "response.content_part.done":
-			part := event.Get("part")
-			if part.Get("type").String() == "output_text" {
-				markText(part.Get("text").String())
+		for _, document := range documents {
+			if !gjson.ValidBytes(document) {
+				return firstTokenMS, "Invalid upstream stream event"
 			}
-		case "response.output_item.done":
-			markContent(event.Get("item"))
-		case "response.completed", "response.done":
-			if status := event.Get("response.status").String(); status != "" && status != "completed" {
-				return firstTokenMS, "Upstream response did not complete"
+			event := gjson.ParseBytes(document)
+			if event.Get("error").IsObject() {
+				return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", event.Get("error.code").String())
 			}
-			if event.Get("response.error").IsObject() {
-				return firstTokenMS, accountHealthProbeSafeError("Upstream response failed", event.Get("response.error.code").String())
+			switch event.Get("type").String() {
+			case "response.output_text.delta":
+				if !completed {
+					markText(event.Get("delta").String())
+				}
+			case "response.output_text.done":
+				if !completed {
+					markText(event.Get("text").String())
+				}
+			case "response.content_part.done":
+				part := event.Get("part")
+				if !completed && part.Get("type").String() == "output_text" {
+					markText(part.Get("text").String())
+				}
+			case "response.output_item.done":
+				if !completed {
+					markContent(event.Get("item"))
+				}
+			case "response.completed", "response.done":
+				if status := event.Get("response.status").String(); status != "" && status != "completed" {
+					return firstTokenMS, "Upstream response did not complete"
+				}
+				if event.Get("response.error").IsObject() {
+					return firstTokenMS, accountHealthProbeSafeError("Upstream response failed", event.Get("response.error.code").String())
+				}
+				if !completed {
+					for _, item := range event.Get("response.output").Array() {
+						markContent(item)
+					}
+					markText(event.Get("response.output_text").String())
+				}
+				completed = true
+			case "response.failed", "response.incomplete", "error":
+				code := event.Get("response.error.code").String()
+				if code == "" {
+					code = event.Get("error.code").String()
+				}
+				return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", code)
 			}
-			for _, item := range event.Get("response.output").Array() {
-				markContent(item)
-			}
-			markText(event.Get("response.output_text").String())
-			if firstTokenMS == nil {
-				return nil, "Upstream completed without text"
-			}
-			return firstTokenMS, ""
-		case "response.failed", "response.incomplete", "error":
-			code := event.Get("response.error.code").String()
-			if code == "" {
-				code = event.Get("error.code").String()
-			}
-			return firstTokenMS, accountHealthProbeSafeError("Upstream stream failed", code)
 		}
 	}
 	if scanner.Err() != nil {
 		return firstTokenMS, "Upstream stream read failed"
+	}
+	if completed {
+		if firstTokenMS == nil {
+			return nil, "Upstream completed without text"
+		}
+		return firstTokenMS, ""
 	}
 	return firstTokenMS, "Upstream stream ended before completion"
 }

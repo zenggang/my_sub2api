@@ -98,6 +98,28 @@ func TestAccountHealthProbeCountsTextFromOutputItemBeforeCompleted(t *testing.T)
 	require.NotNil(t, first)
 }
 
+func TestAccountHealthProbeConcatenatedStreamEvents(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantError  string
+		firstToken bool
+	}{
+		{name: "delta and completed", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}` + "\n\n", firstToken: true},
+		{name: "failure after completed on same line", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}{"type":"response.failed","response":{"error":{"code":"server_error"}}}` + "\n\n", wantError: "Upstream stream failed (server_error)", firstToken: true},
+		{name: "failure after completed on next line", body: `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" + `data: {"type":"response.completed"}` + "\n\n" + `data: {"type":"response.failed"}` + "\n\n", wantError: "Upstream stream failed", firstToken: true},
+		{name: "malformed tail after completed", body: `data: {"type":"response.output_text.delta","delta":"hi"}{"type":"response.completed"}{bad` + "\n\n", wantError: "Invalid upstream stream event"},
+		{name: "completed then done", body: `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" + `data: {"type":"response.completed"}` + "\n\n" + "data: [DONE]\n\n", firstToken: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			first, message := readAccountHealthProbeStream(strings.NewReader(tc.body), time.Now())
+			require.Equal(t, tc.wantError, message)
+			require.Equal(t, tc.firstToken, first != nil)
+		})
+	}
+}
+
 func TestAccountHealthProbeFailuresKeepAccountStateAndSecretsPrivate(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -111,6 +133,8 @@ func TestAccountHealthProbeFailuresKeepAccountStateAndSecretsPrivate(t *testing.
 		{name: "stream error", status: 200, body: "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"access_token=secret\"}}}\n\n", wantError: "Upstream stream failed (server_error)"},
 		{name: "401", status: 401, body: `{"error":{"code":"invalid_token","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 401 (invalid_token)"},
 		{name: "429", status: 429, body: `{"error":{"code":"rate_limit_exceeded","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 429 (rate_limit_exceeded)"},
+		{name: "untrusted HTTP error code", status: 503, body: `{"error":{"code":"sk-test-token-123","message":"access_token=secret"}}`, wantError: "Upstream returned HTTP 503"},
+		{name: "untrusted stream error code", status: 200, body: "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"sk-test-token-123\"}}}\n\n", wantError: "Upstream stream failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,10 +150,68 @@ func TestAccountHealthProbeFailuresKeepAccountStateAndSecretsPrivate(t *testing.
 			require.Equal(t, tc.status, *result.UpstreamStatusCode)
 			require.Equal(t, tc.wantError, result.Error)
 			require.NotContains(t, result.Error, "secret")
+			require.NotContains(t, result.Error, "sk-test-token-123")
 			require.Equal(t, tc.firstToken, result.FirstTokenMS != nil)
 			requireHealthProbeNoAccountWrites(t, repo)
 		})
 	}
+}
+
+func TestAccountHealthProbeResolvesTextCapabilityFromUpstreamModel(t *testing.T) {
+	cases := []struct {
+		name          string
+		model         string
+		mappingTarget string
+		passthrough   bool
+		wantUpstream  string
+		wantError     bool
+	}{
+		{name: "image named alias maps to text", model: "gpt-image-alias", mappingTarget: "gpt-5.4", wantUpstream: "gpt-5.4"},
+		{name: "text named alias maps to image", model: "text-alias", mappingTarget: "gpt-image-2", wantError: true},
+		{name: "passthrough ignores text named alias image mapping", model: "text-alias", mappingTarget: "gpt-image-2", passthrough: true, wantUpstream: "text-alias"},
+		{name: "passthrough rejects image named alias text mapping", model: "gpt-image-alias", mappingTarget: "gpt-5.4", passthrough: true, wantError: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := healthProbeTestAccount(95, AccountTypeOAuth)
+			account.Credentials["model_mapping"] = map[string]any{tc.model: tc.mappingTarget}
+			if tc.passthrough {
+				account.Extra = map[string]any{"openai_passthrough": true}
+			}
+			repo := &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}}
+			upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(http.StatusOK, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\ndata: {\"type\":\"response.completed\"}\n\n")}}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+			result, err := svc.ProbeAccountHealth(context.Background(), account.ID, tc.model)
+			if tc.wantError {
+				require.Error(t, err)
+				require.Empty(t, upstream.requests)
+			} else {
+				require.NoError(t, err)
+				require.True(t, result.Success)
+				require.Len(t, upstream.requests, 1)
+				body, readErr := io.ReadAll(upstream.requests[0].Body)
+				require.NoError(t, readErr)
+				require.Equal(t, tc.wantUpstream, gjson.GetBytes(body, "model").String())
+			}
+			requireHealthProbeNoAccountWrites(t, repo)
+		})
+	}
+}
+
+func TestAccountHealthProbeRejectsSyntheticFixtureWithoutUpstreamOrWrites(t *testing.T) {
+	account := healthProbeTestAccount(96, AccountTypeOAuth)
+	account.Extra = map[string]any{"synthetic_ui_test": true}
+	repo := &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &queuedHTTPUpstream{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+
+	result, err := svc.ProbeAccountHealth(context.Background(), account.ID, "gpt-5.4")
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Equal(t, "Synthetic test account cannot be health-probed", result.Error)
+	require.Nil(t, result.UpstreamStatusCode)
+	require.Empty(t, upstream.requests)
+	requireHealthProbeNoAccountWrites(t, repo)
 }
 
 type healthProbeTimeoutUpstream struct{ queuedHTTPUpstream }
