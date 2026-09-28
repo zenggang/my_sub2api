@@ -1315,6 +1315,40 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	}
 }
 
+type AccountHealthProbeRequest struct {
+	ModelID string `json:"model_id" binding:"required"`
+	Mode    string `json:"mode"`
+}
+
+// HealthProbe evaluates one OpenAI text request without recovering or changing account state.
+// POST /api/v1/admin/accounts/:id/health-probe
+func (h *AccountHandler) HealthProbe(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req AccountHealthProbeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "A text model_id is required")
+		return
+	}
+	if req.Mode != "" && req.Mode != "text" {
+		response.BadRequest(c, "Only text mode is supported")
+		return
+	}
+	if h.accountTestService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account health probe is unavailable")
+		return
+	}
+	result, err := h.accountTestService.ProbeAccountHealth(c.Request.Context(), accountID, req.ModelID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // RecoverState handles unified recovery of recoverable account runtime state.
 // POST /api/v1/admin/accounts/:id/recover-state
 func (h *AccountHandler) RecoverState(c *gin.Context) {
