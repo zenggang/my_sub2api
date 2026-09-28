@@ -31,15 +31,14 @@ Do not replace the legacy `/usr/local/bin/sub2api-patched-release`.
 
 ```bash
 bash TOOL_DIR/fork-remote.sh --check PACKAGE_DIR LIVE_SHA
-bash TOOL_DIR/canary.sh PACKAGE_DIR TEST_KEY_ID [ASTRA_RESPONSE_MODEL]
+bash TOOL_DIR/canary.sh PACKAGE_DIR TEST_KEY_ID
 bash TOOL_DIR/fork-remote.sh --deploy PACKAGE_DIR LIVE_SHA
 bash TOOL_DIR/fork-remote.sh --rollback BACKUP_DIR CURRENT_SHA
 ```
 
-Paths/SHA/key IDs are values established per run. The optional Astra response
-model is for an explicitly verified channel mapping; the default requires the
-requested model in the response. The canary uses the versioned smoke script,
-port 18081 and `mode=http`; it shares DB/Redis and therefore
+Paths/SHA/key IDs are values established per run. The canary requests five
+underlying models directly and requires each response model to match. It uses
+the versioned smoke script, port 18081 and `mode=http`; it shares DB/Redis and therefore
 generates usage and normal request state. It is not a read-only DB sandbox.
 Its SHA-bound smoke marker is required by deployment. Deployment checks remain
 mandatory even after canary completion. Do not use `--allow-active` without the

@@ -3,7 +3,6 @@ import json, os, subprocess, sys, uuid
 
 os.umask(0o077)
 port=int(sys.argv[1]); model=sys.argv[2]; key_id=int(sys.argv[3])
-expected_model=sys.argv[4] if len(sys.argv)>4 else model
 key=subprocess.check_output(['sudo','-u','postgres','/opt/postgresql/bin/psql','-h','/var/run/postgresql','-d','sub2api','-X','-At','-c','select key from api_keys where id=%d and deleted_at is null' % key_id]).strip().decode('utf-8')
 if not key: raise RuntimeError('smoke key not found')
 body=json.load(open('/data/sub2api-patched/tools/smoke-namespace.json'))
@@ -27,8 +26,8 @@ for turn in range(2):
     print(json.dumps({'turn':turn,'client_request_id':rid,'terminal':terminal.get('type'),'model':terminal.get('response',{}).get('model'),'item_types':[item.get('type') for item in items],'tool_namespaces':[item.get('namespace') for item in items if item.get('type')=='function_call']}))
     sys.stdout.flush()
     if terminal.get('type')!='response.completed':sys.exit(2)
-    # A configured channel alias can change the upstream model; still require the exact target.
-    if terminal.get('response',{}).get('model')!=expected_model: raise RuntimeError('downstream model name changed')
+    # Direct smoke requests must not silently pass through a model alias.
+    if terminal.get('response',{}).get('model')!=model: raise RuntimeError('downstream model name changed')
     if turn==0:
         calls=[item for item in items if item.get('type')=='function_call']
         if not calls or calls[0].get('namespace')!='compat_probe': raise RuntimeError('missing namespace tool call')
