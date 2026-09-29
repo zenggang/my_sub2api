@@ -1349,6 +1349,38 @@ func (h *AccountHandler) HealthProbe(c *gin.Context) {
 	response.Success(c, result)
 }
 
+type AccountIntelligenceTestRequest struct {
+	ModelID         string `json:"model_id" binding:"required"`
+	Prompt          string `json:"prompt" binding:"required"`
+	ReasoningEffort string `json:"reasoning_effort"`
+}
+
+// IntelligenceTest sends one prompt through the selected account without changing its runtime state.
+// POST /api/v1/admin/accounts/:id/intelligence-test
+func (h *AccountHandler) IntelligenceTest(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req AccountIntelligenceTestRequest
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256<<10)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "A model_id and prompt are required")
+		return
+	}
+	if h.accountTestService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account intelligence test is unavailable")
+		return
+	}
+	result, err := h.accountTestService.TestAccountIntelligence(c.Request.Context(), accountID, req.ModelID, req.Prompt, req.ReasoningEffort)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // RecoverState handles unified recovery of recoverable account runtime state.
 // POST /api/v1/admin/accounts/:id/recover-state
 func (h *AccountHandler) RecoverState(c *gin.Context) {

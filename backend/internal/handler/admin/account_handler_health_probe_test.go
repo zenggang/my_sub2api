@@ -92,3 +92,49 @@ func TestAccountHandlerHealthProbeReturnsStandardResultAndRejectsCompact(t *test
 		}
 	}
 }
+
+func TestAccountHandlerIntelligenceTestReturnsStandardResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &service.Account{
+		ID: 13, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+	upstream := &healthProbeHandlerUpstream{}
+	handler := &AccountHandler{accountTestService: service.NewAccountTestService(
+		&healthProbeHandlerRepo{account: account}, nil, nil, nil, nil, upstream, nil, nil,
+	)}
+	for _, tc := range []struct {
+		body       string
+		wantStatus int
+		wantCalls  int
+	}{
+		{body: `{"model_id":"gpt-5.4","prompt":"hello","reasoning_effort":"ultra"}`, wantStatus: http.StatusBadRequest, wantCalls: 0},
+		{body: `{"model_id":"gpt-5.4","prompt":"hello","reasoning_effort":"medium"}`, wantStatus: http.StatusOK, wantCalls: 1},
+	} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Params = gin.Params{{Key: "id", Value: "13"}}
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/13/intelligence-test", bytes.NewBufferString(tc.body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		handler.IntelligenceTest(c)
+		require.Equal(t, tc.wantStatus, recorder.Code)
+		require.Equal(t, tc.wantCalls, upstream.calls)
+		if tc.wantStatus == http.StatusOK {
+			var envelope struct {
+				Code int `json:"code"`
+				Data struct {
+					AccountID  int64  `json:"account_id"`
+					ModelID    string `json:"model_id"`
+					Success    bool   `json:"success"`
+					OutputText string `json:"output_text"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
+			require.Zero(t, envelope.Code)
+			require.Equal(t, int64(13), envelope.Data.AccountID)
+			require.Equal(t, "gpt-5.4", envelope.Data.ModelID)
+			require.True(t, envelope.Data.Success)
+			require.Equal(t, "hi", envelope.Data.OutputText)
+		}
+	}
+}
