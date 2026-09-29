@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	accountIntelligenceTestTimeout = 120 * time.Second
+	accountIntelligenceTestTimeout = 15 * time.Minute
 	maxIntelligencePromptRunes     = 10000
 	maxIntelligenceOutputBytes     = 1 << 20
 )
