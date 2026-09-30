@@ -12,14 +12,16 @@ import (
 // share the scheduler's Redis keys: the scheduler decides admission, while
 // this collection records the requests that are actually in flight.
 type AccountSlotObservation struct {
-	Active  int64            `json:"active"`
-	Waiting int64            `json:"waiting"`
-	Users   map[string]int64 `json:"users"`
+	Active       int64            `json:"active"`
+	Waiting      int64            `json:"waiting"`
+	Users        map[string]int64 `json:"users"`
+	WaitingUsers map[string]int64 `json:"waiting_users"`
 }
 
 type observedAccountSlots struct {
-	slots   map[uint64]int64
-	waiting int64
+	slots        map[uint64]int64
+	waiting      int64
+	waitingUsers map[int64]int64
 }
 
 type accountSlotObservationStore struct {
@@ -62,9 +64,12 @@ func (s *accountSlotObservationStore) acquire(accountID, userID int64) func() {
 	}
 }
 
-func (s *accountSlotObservationStore) incrementWaiting(accountID int64) {
+func (s *accountSlotObservationStore) incrementWaiting(accountID, userID int64) {
 	if s == nil || accountID <= 0 {
 		return
+	}
+	if userID <= 0 {
+		userID = 0
 	}
 	s.mu.Lock()
 	account := s.accounts[accountID]
@@ -72,18 +77,32 @@ func (s *accountSlotObservationStore) incrementWaiting(accountID int64) {
 		account = &observedAccountSlots{slots: make(map[uint64]int64)}
 		s.accounts[accountID] = account
 	}
+	if account.waitingUsers == nil {
+		account.waitingUsers = make(map[int64]int64)
+	}
+	// 等待计数按请求累加；身份缺失单独保留，不能归到正在使用账号的其他用户。
+	account.waitingUsers[userID]++
 	account.waiting++
 	s.mu.Unlock()
 }
 
-func (s *accountSlotObservationStore) decrementWaiting(accountID int64) {
+func (s *accountSlotObservationStore) decrementWaiting(accountID, userID int64) {
 	if s == nil || accountID <= 0 {
 		return
+	}
+	if userID <= 0 {
+		userID = 0
 	}
 	s.mu.Lock()
 	account := s.accounts[accountID]
 	if account != nil {
-		if account.waiting > 0 {
+		// 仅移除本用户的等待请求，避免缺失身份或重复清理误扣其他用户的队列。
+		if count := account.waitingUsers[userID]; count > 0 {
+			if count == 1 {
+				delete(account.waitingUsers, userID)
+			} else {
+				account.waitingUsers[userID] = count - 1
+			}
 			account.waiting--
 		}
 		if len(account.slots) == 0 && account.waiting == 0 {
@@ -111,10 +130,17 @@ func (s *accountSlotObservationStore) snapshot() map[int64]AccountSlotObservatio
 				users[key]++
 			}
 		}
+		waitingUsers := make(map[string]int64)
+		for userID, count := range account.waitingUsers {
+			if userID > 0 {
+				waitingUsers[strconv.FormatInt(userID, 10)] = count
+			}
+		}
 		result[accountID] = AccountSlotObservation{
-			Active:  int64(len(account.slots)),
-			Waiting: account.waiting,
-			Users:   users,
+			Active:       int64(len(account.slots)),
+			Waiting:      account.waiting,
+			Users:        users,
+			WaitingUsers: waitingUsers,
 		}
 	}
 	return result

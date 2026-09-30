@@ -539,26 +539,36 @@ func (s *ConcurrencyService) DecrementWaitCount(ctx context.Context, userID int6
 
 // IncrementAccountWaitCount increments the wait queue counter for an account.
 func (s *ConcurrencyService) IncrementAccountWaitCount(ctx context.Context, accountID int64, maxWait int) (bool, error) {
+	userID := int64(0)
+	if ctx != nil {
+		userID, _ = ctx.Value(ctxkey.UserID).(int64)
+	}
+	// 用户归属仅补充进程内观测，不改变 Redis 队列准入和缓存异常时的既有降级行为。
 	if s.cache == nil {
-		s.observation.incrementWaiting(accountID)
+		s.observation.incrementWaiting(accountID, userID)
 		return true, nil
 	}
 
 	result, err := s.cache.IncrementAccountWaitCount(ctx, accountID, maxWait)
 	if err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: increment wait count failed for account %d: %v", accountID, err)
-		s.observation.incrementWaiting(accountID)
+		s.observation.incrementWaiting(accountID, userID)
 		return true, nil
 	}
 	if result {
-		s.observation.incrementWaiting(accountID)
+		s.observation.incrementWaiting(accountID, userID)
 	}
 	return result, nil
 }
 
 // DecrementAccountWaitCount decrements the wait queue counter for an account.
 func (s *ConcurrencyService) DecrementAccountWaitCount(ctx context.Context, accountID int64) {
-	s.observation.decrementWaiting(accountID)
+	userID := int64(0)
+	if ctx != nil {
+		userID, _ = ctx.Value(ctxkey.UserID).(int64)
+	}
+	// 从原上下文读取身份，即使请求已取消也先清理观测，再用独立上下文释放 Redis 计数。
+	s.observation.decrementWaiting(accountID, userID)
 	if s.cache == nil {
 		return
 	}
