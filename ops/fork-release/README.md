@@ -40,6 +40,8 @@ Paths/SHA/key IDs are values established per run. The canary requests five
 underlying models directly and requires each response model to match. It uses
 the versioned smoke script, port 18081 and `mode=http`; it shares DB/Redis and therefore
 generates usage and normal request state. It is not a read-only DB sandbox.
+The native matrix is GPT-5.5, GPT-5.6 Sol/Terra/Luna, and GPT-6.1 Sol.
+Legacy GPT-6 Sol aliases do not replace the strict native response-model check.
 Its SHA-bound smoke marker is required by deployment. Deployment checks remain
 mandatory even after canary completion. Do not use `--allow-active` without the
 user explicitly authorizing interruption. A pre-switch check is not zero downtime.
