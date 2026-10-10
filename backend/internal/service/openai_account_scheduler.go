@@ -2328,6 +2328,12 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}
+	// previous/guardian 可以提前返回，自己的版本快照必须在这些选号分支之前固定。
+	if platform == PlatformOpenAI && sessionHash != "" {
+		if _, err := s.captureStickyBinding(ctx, groupID, sessionHash); err != nil {
+			slog.Warn("openai.sticky_snapshot_failed", "group_id", derefGroupID(groupID), "error", err)
+		}
+	}
 	preserveGuardianParentBinding := preserveOpenAIGuardianParentBinding(ctx, sessionHash)
 	guardianParentAccountID := int64(0)
 	if strings.TrimSpace(previousResponseID) == "" {

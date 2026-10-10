@@ -351,6 +351,12 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		if ctx != nil {
 			userID, _ = ctx.Value(ctxkey.UserID).(int64)
 		}
+		if md := stickyRequestMetadata(ctx); md != nil {
+			md.mu.Lock()
+			groupID, hash := md.GroupID, md.Hash
+			md.mu.Unlock()
+			return s.observation.acquireSession(accountID, userID, groupID, hash)
+		}
 		return s.observation.acquire(accountID, userID)
 	}
 	// If maxConcurrency is 0 or negative, no limit

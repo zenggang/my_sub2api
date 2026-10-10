@@ -14,7 +14,8 @@ import (
 )
 
 type OpsHandler struct {
-	opsService *service.OpsService
+	opsService          *service.OpsService
+	userAccountDispatch openAIUserAccountDispatchService
 }
 
 // GetErrorLogByID returns ops error log detail.
@@ -70,6 +71,10 @@ func parseOpsViewParam(c *gin.Context) string {
 
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
+}
+
+func NewOpsHandlerWithDispatch(opsService *service.OpsService, gateway *service.OpenAIGatewayService) *OpsHandler {
+	return &OpsHandler{opsService: opsService, userAccountDispatch: gateway}
 }
 
 // GetErrorLogs lists ops error logs.

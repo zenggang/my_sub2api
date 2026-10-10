@@ -20,8 +20,14 @@ type AccountSlotObservation struct {
 
 type observedAccountSlots struct {
 	slots        map[uint64]int64
+	sessions     map[uint64]observedAccountSession
 	waiting      int64
 	waitingUsers map[int64]int64
+}
+
+type observedAccountSession struct {
+	groupID int64
+	hash    string
 }
 
 type accountSlotObservationStore struct {
@@ -35,6 +41,10 @@ func newAccountSlotObservationStore() *accountSlotObservationStore {
 }
 
 func (s *accountSlotObservationStore) acquire(accountID, userID int64) func() {
+	return s.acquireSession(accountID, userID, 0, "")
+}
+
+func (s *accountSlotObservationStore) acquireSession(accountID, userID, groupID int64, hash string) func() {
 	if s == nil || accountID <= 0 {
 		return func() {}
 	}
@@ -46,6 +56,12 @@ func (s *accountSlotObservationStore) acquire(accountID, userID int64) func() {
 		s.accounts[accountID] = account
 	}
 	account.slots[token] = userID
+	if hash != "" {
+		if account.sessions == nil {
+			account.sessions = make(map[uint64]observedAccountSession)
+		}
+		account.sessions[token] = observedAccountSession{groupID: groupID, hash: hash}
+	}
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -55,6 +71,7 @@ func (s *accountSlotObservationStore) acquire(accountID, userID int64) func() {
 			account := s.accounts[accountID]
 			if account != nil {
 				delete(account.slots, token)
+				delete(account.sessions, token)
 				if len(account.slots) == 0 && account.waiting == 0 {
 					delete(s.accounts, accountID)
 				}
@@ -62,6 +79,25 @@ func (s *accountSlotObservationStore) acquire(accountID, userID int64) func() {
 			s.mu.Unlock()
 		})
 	}
+}
+
+func (s *ConcurrencyService) dispatchSessionInFlight(accountID, userID, groupID int64, hash string) int64 {
+	if s == nil || s.observation == nil {
+		return 0
+	}
+	s.observation.mu.RLock()
+	defer s.observation.mu.RUnlock()
+	account := s.observation.accounts[accountID]
+	if account == nil {
+		return 0
+	}
+	var count int64
+	for token, session := range account.sessions {
+		if account.slots[token] == userID && session.groupID == groupID && session.hash == hash {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *accountSlotObservationStore) incrementWaiting(accountID, userID int64) {

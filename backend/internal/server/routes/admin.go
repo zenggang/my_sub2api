@@ -198,6 +198,14 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/account-availability", h.Admin.Ops.GetAccountAvailability)
 		ops.GET("/realtime-traffic", h.Admin.Ops.GetRealtimeTrafficSummary)
 
+		// 用户会话软改绑复用既有管理员认证；默认关闭，需要先核验客户端覆盖和写入者升级。
+		dispatch := ops.Group("/user-account-dispatch")
+		dispatch.POST("/preview", h.Admin.Ops.PreviewUserAccountDispatch)
+		dispatch.POST("/create", h.Admin.Ops.CreateUserAccountDispatch)
+		dispatch.GET("/status", h.Admin.Ops.GetUserAccountDispatchStatus)
+		dispatch.GET("/settings", h.Admin.Ops.GetUserAccountDispatchSettings)
+		dispatch.PUT("/settings", h.Admin.Ops.UpdateUserAccountDispatchSettings)
+
 		// Alerts (rules + events)
 		ops.GET("/alert-rules", h.Admin.Ops.ListAlertRules)
 		ops.POST("/alert-rules", h.Admin.Ops.CreateAlertRule)
