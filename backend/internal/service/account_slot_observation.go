@@ -81,23 +81,24 @@ func (s *accountSlotObservationStore) acquireSession(accountID, userID, groupID 
 	}
 }
 
-func (s *ConcurrencyService) dispatchSessionInFlight(accountID, userID, groupID int64, hash string) int64 {
+func (s *ConcurrencyService) dispatchAccountUserInFlight(accountID, userID int64) map[observedAccountSession]int64 {
+	result := make(map[observedAccountSession]int64)
 	if s == nil || s.observation == nil {
-		return 0
+		return result
 	}
 	s.observation.mu.RLock()
 	defer s.observation.mu.RUnlock()
 	account := s.observation.accounts[accountID]
 	if account == nil {
-		return 0
+		return result
 	}
-	var count int64
-	for token, session := range account.sessions {
-		if account.slots[token] == userID && session.groupID == groupID && session.hash == hash {
-			count++
+	for token, slotUserID := range account.slots {
+		if slotUserID == userID {
+			// 缺少会话引用的槽位只合并为未知身份，不能推断无 SID 或入站协议。
+			result[account.sessions[token]]++
 		}
 	}
-	return count
+	return result
 }
 
 func (s *accountSlotObservationStore) incrementWaiting(accountID, userID int64) {

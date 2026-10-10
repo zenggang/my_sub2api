@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -146,13 +147,22 @@ func (s *OpenAIGatewayService) PreviewOpenAIUserAccountDispatch(ctx context.Cont
 	now := time.Now().UTC()
 	preview := OpenAIDispatchPreview{PreviewID: uuid.NewString(), ExpiresAt: now.Add(OpenAIDispatchPreviewTTL), User: OpenAIDispatchIdentity{ID: uid, Name: user.Email}, SourceAccount: OpenAIDispatchIdentity{ID: sourceID, Name: source.Name}, Sessions: []OpenAIDispatchSession{}, SkippedSessions: []OpenAIDispatchSession{}, Targets: []OpenAIDispatchTarget{}, Coverage: OpenAIDispatchCoverage{Truncated: truncated, Scope: "已登记且仍有效的 UUID HTTP/SSE 自身会话；在途对照来自当前实例"}}
 	bindings := make([]OpenAIStickySnapshot, 0, len(scopes))
+	inFlight := s.concurrencyService.dispatchAccountUserInFlight(sourceID, uid)
+	seen := make(map[observedAccountSession]bool, len(scopes))
 	for _, scope := range scopes {
+		reference := observedAccountSession{groupID: scope.GroupID, hash: scope.Hash}
+		if seen[reference] {
+			continue
+		}
+		seen[reference] = true
 		scope = s.dispatchScope(scope)
 		snap, e := cache.ReadOpenAIStickySnapshot(ctx, scope, uuid.NewString())
 		if e != nil {
 			return nil, dispatchStoreError(e, "")
 		}
-		item := OpenAIDispatchSession{SessionRef: uuid.NewString(), GroupID: scope.GroupID, CurrentBinding: nil, Observation: "not_observed", RebindResult: "not_processed"}
+		item := OpenAIDispatchSession{SessionRef: uuid.NewString(), GroupID: scope.GroupID, CurrentBinding: nil, Observation: "not_observed", RebindResult: "not_processed", InFlight: inFlight[reference]}
+		// 已知跳过项也消费关联槽位；同一物理绑定只展示一次，不再重复列为未知项。
+		delete(inFlight, reference)
 		if snap.AccountID > 0 {
 			item.CurrentBinding = snap.AccountID
 		}
@@ -164,12 +174,23 @@ func (s *OpenAIGatewayService) PreviewOpenAIUserAccountDispatch(ctx context.Cont
 			continue
 		}
 		item.Observation = "awaiting_observation"
-		if s.concurrencyService != nil {
-			item.InFlight = s.concurrencyService.dispatchSessionInFlight(sourceID, uid, scope.GroupID, scope.Hash)
-		}
 		preview.Counts.InFlight += item.InFlight
 		preview.Sessions = append(preview.Sessions, item)
 		bindings = append(bindings, *snap)
+	}
+	unmatched := make([]observedAccountSession, 0, len(inFlight))
+	for reference := range inFlight {
+		unmatched = append(unmatched, reference)
+	}
+	sort.Slice(unmatched, func(i, j int) bool {
+		if unmatched[i].groupID != unmatched[j].groupID {
+			return unmatched[i].groupID < unmatched[j].groupID
+		}
+		return unmatched[i].hash < unmatched[j].hash
+	})
+	for _, reference := range unmatched {
+		// 执行槽位证明当前请求在途，不证明粘性仍为源账号；这些项仅展示，不加入 CAS。
+		preview.SkippedSessions = append(preview.SkippedSessions, OpenAIDispatchSession{SessionRef: uuid.NewString(), GroupID: reference.groupID, RebindResult: "not_registered_or_unmatched", Reason: "not_registered_or_unmatched", Observation: "not_observed", CurrentBinding: "unknown", InFlight: inFlight[reference]})
 	}
 	preview.Counts.Rebindable = len(bindings)
 	preview.Counts.Skipped = len(preview.SkippedSessions)
