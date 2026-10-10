@@ -123,7 +123,7 @@ func dispatchSelect(t *testing.T, gateway *service.OpenAIGatewayService, c *gin.
 	return selection
 }
 
-func TestUserAccountDispatchAPIMainFlowIncludesIdleAndInFlightSessions(t *testing.T) {
+func TestUserAccountDispatchAPIMainFlowIncludesIdleInFlightAndFallbackIdempotency(t *testing.T) {
 	router, gateway, _ := newDispatchAPI(t)
 	require.Equal(t, http.StatusConflict, dispatchAPICall(t, router, "POST", "/preview", `{"user_id":42,"source_account_id":1}`, nil).Code)
 	var setting struct {
@@ -144,12 +144,14 @@ func TestUserAccountDispatchAPIMainFlowIncludesIdleAndInFlightSessions(t *testin
 	dispatchAPIData(t, dispatchAPICall(t, router, "POST", "/preview", `{"user_id":42,"source_account_id":1}`, nil), &preview)
 	require.Equal(t, 2, preview.Counts.Rebindable)
 	require.Equal(t, int64(1), preview.Counts.InFlight)
-	idempotency := uuid.NewString()
+	idempotency := "dispatch-1728561800-local_1"
 	body := fmt.Sprintf(`{"preview_id":%q,"target_account_id":2,"idempotency_key":%q}`, preview.PreviewID, idempotency)
 	var op service.OpenAIDispatchOperation
 	dispatchAPIData(t, dispatchAPICall(t, router, "POST", "/create", body, nil), &op)
 	require.True(t, op.Accepted)
 	require.Equal(t, 2, op.Counts.Rebound)
+	conflict := fmt.Sprintf(`{"preview_id":%q,"target_account_id":1,"idempotency_key":%q}`, preview.PreviewID, idempotency)
+	require.Equal(t, http.StatusConflict, dispatchAPICall(t, router, "POST", "/create", conflict, nil).Code)
 	// 点击前的 A 请求迟到写 C，不得覆盖 B；其准入回调也不能消费新操作。
 	group := int64(91)
 	require.NoError(t, gateway.BindStickySession(first.Request.Context(), &group, hash, 1))

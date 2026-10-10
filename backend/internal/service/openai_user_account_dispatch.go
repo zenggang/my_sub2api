@@ -215,11 +215,27 @@ func dispatchBodyHash(previewID string, target int64) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
+
+func validOpenAIDispatchIdempotencyKey(key string) bool {
+	if len(key) == 0 || len(key) > 160 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		ch := key[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (s *OpenAIGatewayService) CreateOpenAIUserAccountDispatch(ctx context.Context, owner, previewID string, targetID int64, idempotency string) (*OpenAIDispatchOperation, error) {
 	if _, e := uuid.Parse(previewID); e != nil {
 		return nil, dispatchError(400, "INVALID_REQUEST", "preview_id无效")
 	}
-	if _, e := uuid.Parse(idempotency); e != nil || targetID <= 0 {
+	// 幂等键是管理客户端固定的不透明引用；内网 HTTP 的浏览器 UUID 降级键也须可恢复。
+	if !validOpenAIDispatchIdempotencyKey(idempotency) || targetID <= 0 {
 		return nil, dispatchError(400, "INVALID_REQUEST", "幂等键或目标账号无效")
 	}
 	cache, err := s.userDispatchCache()
