@@ -337,6 +337,10 @@ func (c *gatewayCache) RebindOpenAIDispatchSession(ctx context.Context, record *
 var observeOpenAIDispatchScript = redis.NewScript(`
 local markraw=redis.call('GET',KEYS[1]);local raw=redis.call('GET',KEYS[2])
 if not markraw or not raw then return 0 end
+-- 捕获快照后可能出现 SID 碰撞；准入观察必须与当前所有权事实在同一脚本复核。
+if tonumber(ARGV[5])<=0 or tonumber(redis.call('HGET',KEYS[3],'owner'))~=tonumber(ARGV[5]) or
+ redis.call('HGET',KEYS[3],'owner_conflict')=='1' or redis.call('HGET',KEYS[3],'identity_conflict')=='1' or
+ redis.call('HGET',KEYS[3],'has_ws')=='1' then return 0 end
 local marker=cjson.decode(markraw);local expected=cjson.decode(ARGV[1])
 local tm=redis.call('TIME');local now=tonumber(tm[1])*1000+math.floor(tonumber(tm[2])/1000)
 if marker.operation_id~=expected.operation_id or marker.rebind_revision~=expected.rebind_revision or marker.session_ref~=expected.session_ref or now>marker.deadline_ms then return 0 end
@@ -360,7 +364,8 @@ func (c *gatewayCache) ObserveOpenAIDispatchAdmission(ctx context.Context, scope
 	if queued {
 		flag = "1"
 	}
-	_, e = observeOpenAIDispatchScript.Run(ctx, c.rdb, []string{openAIStickyKeys(scope)[3], openAIDispatchOperationKey(marker.OperationID)}, b, aid, flag, time.Now().UTC().Format(time.RFC3339Nano)).Result()
+	keys := openAIStickyKeys(scope)
+	_, e = observeOpenAIDispatchScript.Run(ctx, c.rdb, []string{keys[3], openAIDispatchOperationKey(marker.OperationID), keys[2]}, b, aid, flag, time.Now().UTC().Format(time.RFC3339Nano), scope.UserID).Result()
 	return e
 }
 

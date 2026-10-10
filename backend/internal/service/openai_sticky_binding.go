@@ -131,7 +131,8 @@ func (s *OpenAIGatewayService) captureStickyBinding(ctx context.Context, groupID
 		if scope.Own {
 			md.GroupID = scope.GroupID
 		}
-		if scope.Own && !md.Guardian && md.Observed == nil && snapshot.Marker != nil {
+		// 已见 SID 碰撞只能继续普通推理，不能领取其他用户的管理观察身份。
+		if scope.Own && scope.Supported && scope.Protocol == "http" && !md.Guardian && md.Observed == nil && snapshot.Marker != nil && snapshot.OwnerID == scope.UserID && !snapshot.OwnerConflict && !snapshot.IdentityConflict && !snapshot.HasWS {
 			marker := *snapshot.Marker
 			md.Observed = &marker
 			md.ObservedScope = scope
