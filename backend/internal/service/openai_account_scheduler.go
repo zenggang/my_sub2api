@@ -1337,7 +1337,8 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if s.service.concurrencyService != nil {
 			cfg := s.service.schedulingConfig()
 			return attachSelectionProfitGate(ctx, &AccountSelectionResult{
-				Account: account,
+				Account:               account,
+				preserveStickyBinding: req.PreserveStickyBinding,
 				WaitPlan: &AccountWaitPlan{
 					AccountID:      account.ID,
 					MaxConcurrency: account.Concurrency,
@@ -1723,7 +1724,8 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 				continue
 			}
 			return attachSelectionProfitGate(ctx, &AccountSelectionResult{
-				Account: fresh,
+				Account:               fresh,
+				preserveStickyBinding: req.PreserveStickyBinding,
 				WaitPlan: &AccountWaitPlan{
 					AccountID:      fresh.ID,
 					MaxConcurrency: fresh.Concurrency,

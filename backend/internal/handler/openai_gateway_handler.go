@@ -2305,7 +2305,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		selection.Account = latest
 		// 调度器已抢槽路径无门时由选号内部完成 eager 绑定；门下选号内部
 		// 推迟绑定，这里在终检通过后补准入后绑定。
-		if selection.ProfitGateActive() {
+		if selection.ProfitGateActive() && !selection.PreserveStickyBinding() {
 			if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
 				reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
@@ -2342,7 +2342,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		}
 		account = latest
 		selection.Account = latest
-		if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
+		if err := h.bindOpenAIAdmittedSticky(ctx, groupID, sessionHash, selection); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 		return wrapReleaseOnDone(ctx, fastReleaseFunc), openAISlotAcquireOK
@@ -2398,10 +2398,18 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	}
 	account = latest
 	selection.Account = latest
-	if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, account.ID); err != nil {
+	if err := h.bindOpenAIAdmittedSticky(ctx, groupID, sessionHash, selection); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 	return wrapReleaseOnDone(ctx, accountReleaseFunc), openAISlotAcquireOK
+}
+
+func (h *OpenAIGatewayHandler) bindOpenAIAdmittedSticky(ctx context.Context, groupID *int64, sessionHash string, selection *service.AccountSelectionResult) error {
+	// 等待后拿到临时账号不代表会话迁移；两种利润门状态共用这一保留意图。
+	if selection.PreserveStickyBinding() {
+		return nil
+	}
+	return h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, groupID, sessionHash, selection.Account.ID)
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint

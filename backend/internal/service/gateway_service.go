@@ -582,10 +582,16 @@ type AccountSelectionResult struct {
 	WaitPlan    *AccountWaitPlan // nil means no wait allowed
 	// stickySessionHit 标记账号来自会话粘性绑定命中，供非高级调度路径回填决策标签。
 	stickySessionHit bool
+	// 容量临时溢出只借用本次执行槽，准入补绑也必须保留原会话账号。
+	preserveStickyBinding bool
 	// profitGate 携带本次选号真实生效的利润门（无门为 nil）。门安装在调度栈的
 	// 局部 ctx 上，handler 必须经 ContextWithSelectionProfitGate 重放后才能在
 	// 调度栈之外做抢槽后终检与准入后粘性绑定。
 	profitGate *openAIProfitControlGate
+}
+
+func (s *AccountSelectionResult) PreserveStickyBinding() bool {
+	return s != nil && s.preserveStickyBinding
 }
 
 // ProfitGateActive 报告本次选号是否处于利润门之下。
