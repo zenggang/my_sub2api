@@ -404,7 +404,7 @@ func (c *contentModerationTestHashCache) snapshotDeleted() []string {
 	return out
 }
 
-func TestBuildContentModerationLog_RedactsInputExcerpt(t *testing.T) {
+func TestBuildContentModerationLog_PreservesInputExcerpt(t *testing.T) {
 	svc := &ContentModerationService{}
 	cfg := defaultContentModerationConfig()
 	input := ContentModerationCheckInput{
@@ -413,10 +413,14 @@ func TestBuildContentModerationLog_RedactsInputExcerpt(t *testing.T) {
 		Provider:  "openai",
 	}
 
-	log := svc.buildLog(input, cfg, ContentModerationActionAllow, true, "sexual", 0.8, map[string]float64{"sexual": 0.8}, "hello sk-proj-1234567890abcdef", nil, nil, "")
+	text := "排查 codex-clipboard-098512d2-db32-40d1-bef1-782ed5b5bb86.png https://example.com/orders/123 sk-proj-1234567890abcdef "
+	log := svc.buildLog(input, cfg, ContentModerationActionAllow, true, "sexual", 0.8, map[string]float64{"sexual": 0.8}, text, nil, nil, "")
 
-	require.NotContains(t, log.InputExcerpt, "sk-proj-1234567890abcdef")
-	require.Contains(t, log.InputExcerpt, "[已脱敏]")
+	require.Equal(t, text, log.InputExcerpt)
+	require.NotContains(t, log.InputExcerpt, "[已脱敏]")
+
+	log = svc.buildLog(input, cfg, ContentModerationActionAllow, false, "", 0, nil, strings.Repeat("中文", 150), nil, nil, "")
+	require.Equal(t, strings.Repeat("中文", 120), log.InputExcerpt)
 }
 
 func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
