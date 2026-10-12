@@ -55,7 +55,7 @@ func validModerationEngine(engine string) bool {
 }
 
 func moderationEngineDefaults(engine string) *ContentModerationEngineConfig {
-	p := &ContentModerationEngineConfig{BaseURL: defaultContentModerationBaseURL, Model: defaultContentModerationModel, TimeoutMS: 3000, RetryCount: 2, Thresholds: ContentModerationDefaultThresholds()}
+	p := &ContentModerationEngineConfig{BaseURL: defaultContentModerationBaseURL, Model: defaultContentModerationModel, TimeoutMS: 3000, RetryCount: 2, Thresholds: ContentModerationDefaultThresholds(engine)}
 	if engine == ContentModerationEngineTypeSafe {
 		p.BaseURL, p.Model = "https://api.typesafe.ai", "jev-latest"
 	}
@@ -74,7 +74,8 @@ func (cfg *ContentModerationConfig) engineProfile(engine string) *ContentModerat
 	}
 	p.ProxyID = cloneInt64Ptr(p.ProxyID)
 	p.APIKeys = append([]string(nil), p.APIKeys...)
-	p.Thresholds = cloneFloatMap(p.Thresholds)
+	// 旧配置没有新增专项阈值时补齐默认值，并保留已保存的原类别阈值。
+	p.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(engine), p.Thresholds)
 	return &p
 }
 

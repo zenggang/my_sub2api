@@ -287,6 +287,8 @@ describe('admin RiskControlView', () => {
     await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
     expect((wrapper.get('[data-test="risk-threshold-sexual"]').element as HTMLInputElement).value).toBe('65')
     await wrapper.get('[data-test="risk-threshold-sexual"]').setValue('91')
+    await wrapper.get('[data-test="risk-threshold-cyber/intrusion"]').setValue('96')
+    await wrapper.get('[data-test="risk-threshold-reverse/license-bypass"]').setValue('97')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.basic').trigger('click')
     engine().vm.$emit('update:modelValue', 'openai')
     await flushPromises()
@@ -295,7 +297,7 @@ describe('admin RiskControlView', () => {
     await flushPromises()
     expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ engine: 'openai', engine_configs: {
       openai: expect.objectContaining({ base_url: 'https://openai-edited.example', thresholds: expect.objectContaining({ sexual: 0.73 }) }),
-      typesafe: expect.objectContaining({ base_url: 'https://typesafe-edited.example', thresholds: expect.objectContaining({ sexual: 0.91 }) }),
+      typesafe: expect.objectContaining({ base_url: 'https://typesafe-edited.example', thresholds: expect.objectContaining({ sexual: 0.91, 'cyber/intrusion': 0.96, 'reverse/license-bypass': 0.97 }) }),
     } }))
     expect(showError).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -332,6 +334,11 @@ describe('admin RiskControlView', () => {
     }
     for (const [category, value] of Object.entries(defaults)) {
       expect((wrapper.get(`[data-test="risk-threshold-${category}"]`).element as HTMLInputElement).value).toBe(String(value))
+    }
+    for (const category of ['cyber/intrusion', 'reverse/license-bypass']) {
+      const input = wrapper.find(`[data-test="risk-threshold-${category}"]`)
+      expect(input.exists()).toBe(engine === 'typesafe')
+      if (engine === 'typesafe') expect((input.element as HTMLInputElement).value).toBe('95')
     }
     if (engine === 'typesafe') expect(wrapper.text()).toContain('admin.riskControl.typeSafeThresholds')
     expect(updateConfig).not.toHaveBeenCalled()

@@ -1222,6 +1222,8 @@ const riskThresholdDefaults: Record<string, number> = {
   'hate/threatening': 65,
   illicit: 95,
   'illicit/violent': 95,
+  'cyber/intrusion': 95,
+  'reverse/license-bypass': 95,
   'self-harm': 65,
   'self-harm/intent': 85,
   'self-harm/instructions': 65,
@@ -1231,6 +1233,10 @@ const riskThresholdDefaults: Record<string, number> = {
   'violence/graphic': 95,
 }
 const riskThresholdCategories = Object.keys(riskThresholdDefaults)
+// 专项只在支持自定义问题的 TypeSafe 引擎展示和提交，OpenAI 保持原生分类。
+function riskCategoriesForEngine(engine: ModerationEngine): string[] {
+  return riskThresholdCategories.filter(category => engine === 'typesafe' || !['cyber/intrusion', 'reverse/license-bypass'].includes(category))
+}
 const riskCategoryTranslationKeys: Record<string, string> = {
   harassment: 'harassment',
   'harassment/threatening': 'harassmentThreatening',
@@ -1238,6 +1244,8 @@ const riskCategoryTranslationKeys: Record<string, string> = {
   'hate/threatening': 'hateThreatening',
   illicit: 'illicit',
   'illicit/violent': 'illicitViolent',
+  'cyber/intrusion': 'cyberIntrusion',
+  'reverse/license-bypass': 'reverseLicenseBypass',
   'self-harm': 'selfHarm',
   'self-harm/intent': 'selfHarmIntent',
   'self-harm/instructions': 'selfHarmInstructions',
@@ -1364,13 +1372,13 @@ function engineDraftFromConfig(config: ContentModerationConfig | undefined, engi
   }
 }
 
-function engineDraftPayload(draft: EngineDraft): UpdateModerationEngineConfig {
+function engineDraftPayload(draft: EngineDraft, engine: ModerationEngine): UpdateModerationEngineConfig {
   const keys = parseApiKeys(draft.api_keys_text)
   if (!draft.clear_api_key && draft.api_keys_mode === 'replace' && keys.length === 0) throw new Error('empty replacement keys')
   return {
     base_url: draft.base_url, model: draft.model, proxy_id: draft.proxy_id ?? 0,
     timeout_ms: draft.timeout_ms, retry_count: draft.retry_count,
-    thresholds: Object.fromEntries(riskThresholdCategories.map(k => [k, clampPercent(draft.thresholds[k]) / 100])),
+    thresholds: Object.fromEntries(riskCategoriesForEngine(engine).map(k => [k, clampPercent(draft.thresholds[k]) / 100])),
     clear_api_key: draft.clear_api_key, api_keys: keys.length ? keys : undefined,
     api_keys_mode: draft.api_keys_mode, delete_api_key_hashes: draft.pendingDeletes,
   }
@@ -1691,7 +1699,7 @@ const moderationScoreRows = computed<ModerationScoreRow[]>(() => {
 })
 
 const riskThresholdRows = computed<RiskThresholdRow[]>(() => (
-  riskThresholdCategories.map((category) => ({
+  riskCategoriesForEngine(configForm.engine).map((category) => ({
     category,
     value: configForm.thresholds[category] ?? riskThresholdDefaults[category],
     defaultValue: riskThresholdDefaults[category],
@@ -1965,7 +1973,7 @@ async function saveConfig() {
     }
 
     engineDrafts.value[configForm.engine] = captureEngineDraft()
-    payload.engine_configs = Object.fromEntries(Object.entries(engineDrafts.value).map(([engine, draft]) => [engine, engineDraftPayload(draft)]))
+    payload.engine_configs = Object.fromEntries(Object.entries(engineDrafts.value).map(([engine, draft]) => [engine, engineDraftPayload(draft, engine as ModerationEngine)]))
     const updated = await adminAPI.riskControl.updateConfig(payload)
     applyConfig(updated)
     settingsOpen.value = false
@@ -2434,7 +2442,7 @@ function riskThresholdsFromConfig(thresholds: Record<string, number> | null | un
 
 function buildRiskThresholdPayload(): Record<string, number> {
   const payload: Record<string, number> = {}
-  for (const category of riskThresholdCategories) {
+  for (const category of riskCategoriesForEngine(configForm.engine)) {
     payload[category] = Number((clampPercent(configForm.thresholds[category]) / 100).toFixed(4))
   }
   return payload

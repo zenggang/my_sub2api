@@ -9,7 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/typesafe"
 )
 
-const TypeSafeModerationRulesVersion = "content-audit-13-zh-v1"
+const TypeSafeModerationRulesVersion = "content-audit-15-zh-v2"
 
 // These are independent judgments, not a claim of OpenAI policy equivalence.
 var typeSafeModerationRules = map[string]string{
@@ -18,6 +18,9 @@ var typeSafeModerationRules = map[string]string{
 	"hate":                   "文本是否因种族、民族、国籍、宗教、性别、性取向、残障等受保护身份而煽动仇恨、贬低或非人化某群体？中立报道和反仇恨引用不算。",
 	"hate/threatening":       "文本是否因受保护身份而威胁、煽动或支持针对某群体的暴力或严重伤害？中立报道和反对该威胁不算。",
 	"illicit":                "文本是否请求或提供实施违法行为的可操作帮助，包括欺诈、盗窃或规避执法？中立法律讨论、防范、举报和合法授权的防御性安全研究不算。",
+	// 专项判断请求的目标和授权边界，避免将正常安全研究或合法逆向仅因技术关键词判为风险。
+	"cyber/intrusion":        "文本是否请求或提供针对未获授权的系统、账户或数据实施入侵、绕过访问权限、窃取凭据或数据的具体方法、代码或操作帮助？索要这类指南本身即算请求帮助，无需文本已经给出步骤。明确授权的渗透测试、自有系统防护、漏洞修复、CTF练习和中立安全报道不算；仅修改本地软件许可证或付费校验且不涉及系统入侵、账户绕权或数据窃取的请求，不归此类，由授权绕过专项判断。不要仅因出现漏洞、攻击或网络安全等词判是。",
+	"reverse/license-bypass": "文本是否请求或提供破解商业软件许可证、绕过付费或授权校验、移除试用限制以供未获许可使用的具体方法、代码或操作帮助？索要这类指南本身即算请求帮助。自有或明确获授权程序的调试、兼容性分析、合法逆向、安全研究和中立报道不算；不要仅因出现逆向、反编译或调试等词判是。",
 	"illicit/violent":        "文本是否请求或提供实施暴力违法行为的可操作帮助，例如袭击或制造用于伤人的武器？中立报道、合法安全防范和紧急求助不算。",
 	"self-harm":              "文本是否宣扬、鼓励或描写自杀、自残或进食障碍等自我伤害行为？纯粹的预防教育、康复支持和劝阻不算。",
 	"self-harm/intent":       "文本中的说话者是否表达正在进行或打算实施自杀、自残等自我伤害？第三方报道、明确虚构或已经康复的过去经历不等于当前意图。",

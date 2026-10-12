@@ -462,6 +462,8 @@ export default {
         hateThreatening: '仇恨性威胁',
         illicit: '违法行为协助',
         illicitViolent: '暴力违法行为协助',
+        cyberIntrusion: '网络入侵与数据窃取',
+        reverseLicenseBypass: '逆向破解与授权绕过',
         selfHarm: '自我伤害',
         selfHarmIntent: '自我伤害意图',
         selfHarmInstructions: '自我伤害方法',

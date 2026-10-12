@@ -462,6 +462,8 @@ export default {
         hateThreatening: 'Threatening hate speech',
         illicit: 'Illicit assistance',
         illicitViolent: 'Violent illicit assistance',
+        cyberIntrusion: 'Unauthorized intrusion and data theft',
+        reverseLicenseBypass: 'Reverse engineering for license bypass',
         selfHarm: 'Self-harm',
         selfHarmIntent: 'Self-harm intent',
         selfHarmInstructions: 'Self-harm instructions',

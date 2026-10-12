@@ -117,8 +117,8 @@ var contentModerationCategoryOrder = []string{
 	"violence/graphic",
 }
 
-func ContentModerationDefaultThresholds() map[string]float64 {
-	return map[string]float64{
+func ContentModerationDefaultThresholds(engine ...string) map[string]float64 {
+	thresholds := map[string]float64{
 		"harassment":             0.98,
 		"harassment/threatening": 0.90,
 		"hate":                   0.65,
@@ -133,6 +133,12 @@ func ContentModerationDefaultThresholds() map[string]float64 {
 		"violence":               0.95,
 		"violence/graphic":       0.95,
 	}
+	// 两个专项只由 TypeSafe 独立判定，OpenAI 审核接口仍使用其原生 13 类。
+	if len(engine) > 0 && engine[0] == ContentModerationEngineTypeSafe {
+		thresholds["cyber/intrusion"] = 0.95
+		thresholds["reverse/license-bypass"] = 0.95
+	}
+	return thresholds
 }
 
 func ContentModerationCategories() []string {
@@ -2291,7 +2297,7 @@ func (cfg *ContentModerationConfig) normalize() {
 		cfg.NonHitRetentionDays = maxContentModerationNonHitRetentionDays
 	}
 	cfg.GroupIDs = normalizeInt64IDs(cfg.GroupIDs)
-	cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), cfg.Thresholds)
+	cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(cfg.Engine), cfg.Thresholds)
 	cfg.BlockedKeywords = normalizeBlockedKeywords(cfg.BlockedKeywords)
 	cfg.KeywordBlockingMode = normalizeKeywordBlockingMode(cfg.KeywordBlockingMode)
 	cfg.ModelFilter = normalizeContentModerationModelFilter(cfg.ModelFilter)
@@ -2733,7 +2739,11 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, threshol
 	for category, score := range result.CategoryScores {
 		scores[category] = score
 	}
-	thresholdSnapshot := mergeContentModerationThresholds(ContentModerationDefaultThresholds(), thresholds)
+	engine := ContentModerationEngineOpenAI
+	if result.EngineMeta != nil {
+		engine = result.EngineMeta.Engine
+	}
+	thresholdSnapshot := mergeContentModerationThresholds(ContentModerationDefaultThresholds(engine), thresholds)
 	flagged, highestCategory, highestScore := evaluateModerationScores(scores, thresholdSnapshot)
 	compositeScore := highestScore
 	return &ContentModerationTestAuditResult{
@@ -2788,6 +2798,10 @@ func evaluateModerationScores(scores map[string]float64, thresholds map[string]f
 		}
 	}
 	for category, score := range scores {
+		// 扩展类别必须有已配置阈值才参与命中；不能把未知分数按隐式零阈值拦截。
+		if threshold, ok := thresholds[category]; ok && score >= threshold {
+			flagged = true
+		}
 		if score > highestScore || highestCategory == "" {
 			highestScore = score
 			highestCategory = category
@@ -2801,7 +2815,7 @@ func mergeContentModerationThresholds(base map[string]float64, override map[stri
 	if out == nil {
 		out = map[string]float64{}
 	}
-	for _, category := range contentModerationCategoryOrder {
+	for category := range base {
 		if v, ok := override[category]; ok {
 			if v < 0 {
 				v = 0
