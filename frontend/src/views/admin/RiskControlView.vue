@@ -322,7 +322,7 @@
                       </span>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <div>{{ row.highest_category || '-' }}</div>
+                      <div>{{ categoryLabel(row.highest_category) }}</div>
                       <div class="text-xs text-gray-400">{{ percent(row.highest_score) }}</div>
                       <div v-if="row.matched_keyword" class="mt-0.5 text-xs font-medium text-red-600 dark:text-red-300" :title="t('admin.riskControl.matchedKeyword') + ': ' + row.matched_keyword">
                         {{ t('admin.riskControl.matchedKeyword') }}: {{ row.matched_keyword }}
@@ -685,7 +685,7 @@
                       <div>
                         <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.auditTestResult') }}</p>
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                          {{ t('admin.riskControl.auditTestHighest', { category: moderationTestResult.highest_category || '-', score: percent(moderationTestResult.highest_score) }) }}
+                          {{ t('admin.riskControl.auditTestHighest', { category: categoryLabel(moderationTestResult.highest_category), score: percent(moderationTestResult.highest_score) }) }}
                         </p>
                       </div>
                       <span class="inline-flex rounded-full px-2 py-1 text-xs font-medium" :class="moderationTestResult.flagged ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'">
@@ -704,7 +704,7 @@
                     <div class="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
                       <div v-for="score in moderationScoreRows" :key="score.category">
                         <div class="mb-1 flex items-center justify-between gap-3 text-xs">
-                          <span class="truncate text-gray-600 dark:text-gray-300">{{ score.category }}</span>
+                          <span class="truncate text-gray-600 dark:text-gray-300">{{ categoryLabel(score.category) }}</span>
                           <span class="font-mono text-gray-500 dark:text-gray-400">{{ percent(score.score) }} / {{ percent(score.threshold) }}</span>
                         </div>
                         <div class="h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-dark-700">
@@ -959,7 +959,7 @@
                 <div class="flex items-start justify-between gap-3">
                   <div class="min-w-0">
                     <label class="block truncate text-sm font-semibold text-gray-900 dark:text-white" :for="`risk-threshold-${row.category}`">
-                      {{ row.category }}
+                      {{ categoryLabel(row.category) }}
                     </label>
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                       {{ t('admin.riskControl.riskThresholdDefault', { value: formatThresholdPercent(row.defaultValue) }) }}
@@ -1118,7 +1118,7 @@
             <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
               <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</p>
               <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">
-                {{ inputDetailRow.highest_category || '-' }} / {{ percent(inputDetailRow.highest_score) }}
+                {{ categoryLabel(inputDetailRow.highest_category) }} / {{ percent(inputDetailRow.highest_score) }}
               </p>
             </div>
             <div v-if="inputDetailRow.matched_keyword" class="rounded-lg border border-red-100 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-900/20">
@@ -1231,10 +1231,35 @@ const riskThresholdDefaults: Record<string, number> = {
   'violence/graphic': 95,
 }
 const riskThresholdCategories = Object.keys(riskThresholdDefaults)
+const riskCategoryTranslationKeys: Record<string, string> = {
+  harassment: 'harassment',
+  'harassment/threatening': 'harassmentThreatening',
+  hate: 'hate',
+  'hate/threatening': 'hateThreatening',
+  illicit: 'illicit',
+  'illicit/violent': 'illicitViolent',
+  'self-harm': 'selfHarm',
+  'self-harm/intent': 'selfHarmIntent',
+  'self-harm/instructions': 'selfHarmInstructions',
+  sexual: 'sexual',
+  'sexual/minors': 'sexualMinors',
+  violence: 'violence',
+  'violence/graphic': 'violenceGraphic',
+  cyber_policy: 'cyberPolicy',
+  keyword: 'keyword',
+  hash: 'hash',
+}
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
+
+// 英文分类编码继续用于接口和阈值映射，中文名称仅用于展示；未知分类保留原值便于定位。
+function categoryLabel(category: string | null | undefined): string {
+  if (!category) return '-'
+  const key = riskCategoryTranslationKeys[category]
+  return key ? t(`admin.riskControl.categories.${key}`) : category
+}
 
 const loading = ref(true)
 const saving = ref(false)
