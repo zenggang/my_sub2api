@@ -37,6 +37,7 @@ type contentModerationConfigRequest struct {
 	SampleRate           *int                `json:"sample_rate"`
 	AllGroups            *bool               `json:"all_groups"`
 	GroupIDs             *[]int64            `json:"group_ids"`
+	ChineseOnly          *bool               `json:"chinese_only"` // nil 保持原配置；显式 false 可关闭摘要过滤。
 	RecordNonHits        *bool               `json:"record_non_hits"`
 	Thresholds           *map[string]float64 `json:"thresholds"`
 	WorkerCount          *int                `json:"worker_count"`
@@ -106,6 +107,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		SampleRate:                     req.SampleRate,
 		AllGroups:                      req.AllGroups,
 		GroupIDs:                       req.GroupIDs,
+		ChineseOnly:                    req.ChineseOnly,
 		RecordNonHits:                  req.RecordNonHits,
 		Thresholds:                     req.Thresholds,
 		WorkerCount:                    req.WorkerCount,
