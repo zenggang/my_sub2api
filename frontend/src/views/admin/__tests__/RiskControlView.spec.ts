@@ -90,6 +90,7 @@ const baseConfig = (): ContentModerationConfig => ({
   sample_rate: 100,
   all_groups: true,
   group_ids: [],
+  chinese_only: false,
   record_non_hits: false,
   worker_count: 4,
   queue_size: 32768,
@@ -369,6 +370,35 @@ describe('admin RiskControlView', () => {
       },
     }))
     expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('loads and saves the Chinese summary filter', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), chinese_only: true })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    const toggle = wrapper.findComponent('[data-test="chinese-only-toggle"]')
+    expect(toggle.props('modelValue')).toBe(true)
+    toggle.vm.$emit('update:modelValue', false)
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ chinese_only: false }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('submits edited risk control thresholds when saving moderation config', async () => {

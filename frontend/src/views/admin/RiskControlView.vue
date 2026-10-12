@@ -818,6 +818,13 @@
                 </p>
               </div>
             </div>
+            <div class="flex items-center justify-between gap-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+              <div>
+                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.chineseOnly') }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.chineseOnlyHint') }}</p>
+              </div>
+              <Toggle v-model="configForm.chinese_only" data-test="chinese-only-toggle" />
+            </div>
           </div>
 
           <div v-else-if="activeSettingsTab === 'runtime'" class="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -1276,6 +1283,7 @@ const configForm = reactive({
   sample_rate: 100,
   all_groups: true,
   group_ids: [] as number[],
+  chinese_only: false,
   record_non_hits: false,
   worker_count: 4,
   queue_size: 32768,
@@ -1804,6 +1812,7 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.all_groups = config.all_groups
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
   configForm.record_non_hits = config.record_non_hits
+  configForm.chinese_only = config.chinese_only ?? false
   configForm.worker_count = config.worker_count || 4
   configForm.queue_size = config.queue_size || 32768
   configForm.block_status = config.block_status || 403
@@ -1896,6 +1905,7 @@ async function saveConfig() {
       sample_rate: Number(configForm.sample_rate) || 0,
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
+      chinese_only: configForm.chinese_only,
       record_non_hits: configForm.record_non_hits,
       clear_api_key: configForm.clear_api_key,
       worker_count: Number(configForm.worker_count) || 4,

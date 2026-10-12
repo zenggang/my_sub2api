@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
@@ -63,7 +64,8 @@ const (
 	defaultContentModerationTimeoutMS = 3000
 	maxContentModerationTimeoutMS     = 30000
 	maxModerationInputRunes           = 12000
-	maxModerationExcerptRunes         = 240
+	maxModerationExcerptRunes         = 500
+	maxModerationErrorRunes           = 960 // 摘要扩容不扩大原有错误内容的截取范围。
 
 	defaultContentModerationWorkerCount          = 4
 	maxContentModerationWorkerCount              = 32
@@ -154,6 +156,7 @@ type ContentModerationConfig struct {
 	SampleRate           int                          `json:"sample_rate"`
 	AllGroups            bool                         `json:"all_groups"`
 	GroupIDs             []int64                      `json:"group_ids"`
+	ChineseOnly          bool                         `json:"chinese_only"` // 按摘要的前 500 个字符限定范围；旧配置未设置时保持原有范围。
 	RecordNonHits        bool                         `json:"record_non_hits"`
 	Thresholds           map[string]float64           `json:"thresholds"`
 	WorkerCount          int                          `json:"worker_count"`
@@ -194,6 +197,7 @@ type ContentModerationConfigView struct {
 	SampleRate                     int                                     `json:"sample_rate"`
 	AllGroups                      bool                                    `json:"all_groups"`
 	GroupIDs                       []int64                                 `json:"group_ids"`
+	ChineseOnly                    bool                                    `json:"chinese_only"`
 	RecordNonHits                  bool                                    `json:"record_non_hits"`
 	Thresholds                     map[string]float64                      `json:"thresholds"`
 	WorkerCount                    int                                     `json:"worker_count"`
@@ -291,6 +295,7 @@ type UpdateContentModerationConfigInput struct {
 	SampleRate                     *int                          `json:"sample_rate"`
 	AllGroups                      *bool                         `json:"all_groups"`
 	GroupIDs                       *[]int64                      `json:"group_ids"`
+	ChineseOnly                    *bool                         `json:"chinese_only"`
 	RecordNonHits                  *bool                         `json:"record_non_hits"`
 	Thresholds                     *map[string]float64           `json:"thresholds"`
 	WorkerCount                    *int                          `json:"worker_count"`
@@ -369,6 +374,12 @@ func (in ContentModerationInput) ModerationInput() any {
 
 func (in ContentModerationInput) ExcerptText() string {
 	return in.Text
+}
+
+func (in ContentModerationInput) HasChineseExcerpt() bool {
+	return strings.ContainsFunc(trimRunes(in.ExcerptText(), maxModerationExcerptRunes), func(r rune) bool {
+		return unicode.Is(unicode.Han, r)
+	})
 }
 
 func (in ContentModerationInput) Hash() string {
@@ -696,6 +707,9 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.RecordNonHits != nil {
 		cfg.RecordNonHits = *input.RecordNonHits
 	}
+	if input.ChineseOnly != nil {
+		cfg.ChineseOnly = *input.ChineseOnly
+	}
 	if input.CyberPolicyExcludeFromBanCount != nil {
 		cfg.CyberPolicyExcludeFromBanCount = *input.CyberPolicyExcludeFromBanCount
 	}
@@ -873,6 +887,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"sample_rate", cfg.SampleRate,
 		"api_key_count", len(cfg.apiKeys()),
 		"pre_hash_check_enabled", cfg.PreHashCheckEnabled,
+		"chinese_only", cfg.ChineseOnly,
 		"record_non_hits", cfg.RecordNonHits)
 	if !cfg.Enabled {
 		slog.Info("content_moderation.skip_config_disabled",
@@ -916,6 +931,22 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"model_filter_type", cfg.ModelFilter.Type,
 			"configured_models", cfg.ModelFilter.Models)
 		return allow, nil
+	}
+	var content ContentModerationInput
+	// 在关键词、哈希和异步入队前按同一份摘要过滤，避免范围外请求产生审计调用或记录。
+	if cfg.ChineseOnly {
+		content = ExtractContentModerationInput(input.Protocol, input.Body)
+		if !content.HasChineseExcerpt() {
+			slog.Info("content_moderation.skip_no_chinese_excerpt",
+				"request_id", input.RequestID,
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"group_id", contentModerationLogGroupID(input.GroupID),
+				"endpoint", input.Endpoint,
+				"protocol", input.Protocol,
+				"excerpt_limit_runes", maxModerationExcerptRunes)
+			return allow, nil
+		}
 	}
 	if cfg.Mode == ContentModerationModePreBlock {
 		if cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
@@ -962,7 +993,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			return allow, nil
 		}
 	}
-	content := ExtractContentModerationInput(input.Protocol, input.Body)
+	if !cfg.ChineseOnly {
+		content = ExtractContentModerationInput(input.Protocol, input.Body)
+	}
 	if content.IsEmpty() {
 		slog.Info("content_moderation.skip_empty_input",
 			"user_id", input.UserID,
@@ -2476,6 +2509,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		SampleRate:                     cfg.SampleRate,
 		AllGroups:                      cfg.AllGroups,
 		GroupIDs:                       append([]int64(nil), cfg.GroupIDs...),
+		ChineseOnly:                    cfg.ChineseOnly,
 		RecordNonHits:                  cfg.RecordNonHits,
 		Thresholds:                     cloneFloatMap(cfg.Thresholds),
 		WorkerCount:                    cfg.WorkerCount,
@@ -3096,7 +3130,7 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		Flagged:         true,
 		HighestCategory: "cyber_policy",
 		HighestScore:    1.0,
-		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
+		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationErrorRunes),
 		CreatedAt:       time.Now(),
 	}
 	// 开关开时 cyber_policy 不参与封号计数：当次不判定（此处跳过），

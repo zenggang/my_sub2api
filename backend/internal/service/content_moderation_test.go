@@ -419,8 +419,8 @@ func TestBuildContentModerationLog_PreservesInputExcerpt(t *testing.T) {
 	require.Equal(t, text, log.InputExcerpt)
 	require.NotContains(t, log.InputExcerpt, "[已脱敏]")
 
-	log = svc.buildLog(input, cfg, ContentModerationActionAllow, false, "", 0, nil, strings.Repeat("中文", 150), nil, nil, "")
-	require.Equal(t, strings.Repeat("中文", 120), log.InputExcerpt)
+	log = svc.buildLog(input, cfg, ContentModerationActionAllow, false, "", 0, nil, strings.Repeat("中文", 300), nil, nil, "")
+	require.Equal(t, strings.Repeat("中文", 250), log.InputExcerpt)
 }
 
 func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
