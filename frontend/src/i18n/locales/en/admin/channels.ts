@@ -463,7 +463,7 @@ export default {
         illicit: 'Illicit assistance',
         illicitViolent: 'Violent illicit assistance',
         cyberIntrusion: 'Unauthorized intrusion and data theft',
-        reverseLicenseBypass: 'Reverse engineering for license bypass',
+        reverseLicenseBypass: 'Software decompilation, reverse engineering and license bypass',
         selfHarm: 'Self-harm',
         selfHarmIntent: 'Self-harm intent',
         selfHarmInstructions: 'Self-harm instructions',

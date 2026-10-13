@@ -108,6 +108,17 @@ func TestContentModerationTypeSafeAllCategoriesAndImages(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 }
 
+func TestContentModerationTypeSafeReversePolicyMarksCompanyForbiddenTools(t *testing.T) {
+	rule := typeSafeModerationRules["reverse/license-bypass"]
+	require.Contains(t, rule, "REA")
+	require.Contains(t, rule, "反编译")
+	require.Contains(t, rule, "自有软件、已授权、仅学习")
+	require.Contains(t, rule, "不能豁免")
+	require.Contains(t, rule, "混合请求只要包含一个禁区目标就判是")
+	require.Contains(t, rule, "卸载或禁用工具")
+	require.Equal(t, TypeSafeModerationRulesVersion, "content-audit-15-zh-v3")
+}
+
 func TestContentModerationTypeSafeFailureOpenAndKeyIsolation(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(429) }))
