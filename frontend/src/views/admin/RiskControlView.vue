@@ -1223,7 +1223,7 @@ const riskThresholdDefaults: Record<string, number> = {
   illicit: 95,
   'illicit/violent': 95,
   'cyber/intrusion': 95,
-  'reverse/license-bypass': 95,
+  'reverse/license-bypass': 85,
   'self-harm': 65,
   'self-harm/intent': 85,
   'self-harm/instructions': 65,

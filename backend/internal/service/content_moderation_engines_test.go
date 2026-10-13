@@ -66,6 +66,8 @@ func TestContentModerationEngineThresholdDefaultsAreIndependent(t *testing.T) {
 	typeSafe.Thresholds["sexual"] = 0.8
 	require.Equal(t, 0.65, openai.Thresholds["sexual"])
 	require.Equal(t, 0.65, moderationEngineDefaults(ContentModerationEngineTypeSafe).Thresholds["sexual"])
+	require.Equal(t, 0.85, typeSafe.Thresholds["reverse/license-bypass"])
+	require.Equal(t, 0.95, typeSafe.Thresholds["cyber/intrusion"])
 }
 
 func TestContentModerationTypeSafeAllCategoriesAndImages(t *testing.T) {

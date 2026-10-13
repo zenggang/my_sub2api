@@ -338,7 +338,7 @@ describe('admin RiskControlView', () => {
     for (const category of ['cyber/intrusion', 'reverse/license-bypass']) {
       const input = wrapper.find(`[data-test="risk-threshold-${category}"]`)
       expect(input.exists()).toBe(engine === 'typesafe')
-      if (engine === 'typesafe') expect((input.element as HTMLInputElement).value).toBe('95')
+      if (engine === 'typesafe') expect((input.element as HTMLInputElement).value).toBe(category === 'reverse/license-bypass' ? '85' : '95')
     }
     if (engine === 'typesafe') expect(wrapper.text()).toContain('admin.riskControl.typeSafeThresholds')
     expect(updateConfig).not.toHaveBeenCalled()

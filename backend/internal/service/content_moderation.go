@@ -136,7 +136,8 @@ func ContentModerationDefaultThresholds(engine ...string) map[string]float64 {
 	// 两个专项只由 TypeSafe 独立判定，OpenAI 审核接口仍使用其原生 13 类。
 	if len(engine) > 0 && engine[0] == ContentModerationEngineTypeSafe {
 		thresholds["cyber/intrusion"] = 0.95
-		thresholds["reverse/license-bypass"] = 0.95
+		// 软件逆向属于公司禁区；较低阈值让包含计划、工具准备或诱导性自述的请求及时进入处置。
+		thresholds["reverse/license-bypass"] = 0.85
 	}
 	return thresholds
 }
