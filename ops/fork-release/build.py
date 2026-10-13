@@ -44,12 +44,12 @@ def main():
         run([go, 'version']); run(['node', '--version']); run([pnpm, '--version'])
         run([pnpm, 'install', '--frozen-lockfile'], source/'frontend')
         run([pnpm, 'build'], source/'frontend')
-        selector = 'TestOpenAIAttestation|TestOpenAIWSPool_Attestation|TestNormalizeHeaderOverrideCredentials|TestMappedGPT55|TestNormalizeOpenAIResponsesLite|TestApplyCodexOAuthTransform_PreservesLiteNamespaceToolChoice|TestOpenAIGatewayServiceForward_.*ResponsesLite|TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsResponsesLiteHeader|TestProxyOpenAIWSHTTPBridgeTurn'
+        selector = 'TestOpenAIAttestation|TestOpenAIWSPool_Attestation|TestNormalizeHeaderOverrideCredentials|TestMappedGPT55|TestNormalizeOpenAIResponsesLite|TestApplyCodexOAuthTransform_PreservesLiteNamespaceToolChoice|TestOpenAIGatewayServiceForward_.*ResponsesLite|TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsResponsesLiteHeader|TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsAttestationOnlyInHTTPMode|TestProxyOpenAIWSHTTPBridgeTurn'
         with (work/'tests.jsonl').open('w') as events:
             subprocess.run([go,'test','-tags=unit','./internal/service','-run',selector,'-count=1','-json'], cwd=source/'backend', env=env, stdout=events, stderr=log, check=True)
         passed = [json.loads(line) for line in (work/'tests.jsonl').read_text().splitlines() if line.strip()]
         names = {e.get('Test') for e in passed if e.get('Action') == 'pass'}
-        required = ['TestOpenAIAttestationHTTPForwardingModeAndTarget', 'TestOpenAIAttestationHTTPForwardingRemovesNonCanonicalExistingHeader', 'TestOpenAIWSPool_AttestationScopeIsolatedAndRawValueIsNotPrewarmed', 'TestNormalizeHeaderOverrideCredentials']
+        required = ['TestOpenAIAttestationHTTPForwardingModeAndTarget', 'TestOpenAIAttestationHTTPForwardingRemovesNonCanonicalExistingHeader', 'TestOpenAIWSPool_AttestationScopeIsolatedAndRawValueIsNotPrewarmed', 'TestNormalizeHeaderOverrideCredentials', 'TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsAttestationOnlyInHTTPMode']
         if not all(n in names for n in required) or not any(n and n.startswith('TestMappedGPT55') for n in names):
             raise RuntimeError('required tests did not execute')
         cross = dict(env, CGO_ENABLED='0', GOOS='linux', GOARCH='amd64')

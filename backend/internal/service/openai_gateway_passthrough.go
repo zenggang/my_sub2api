@@ -738,6 +738,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
+	// 透传最终出站同样执行设备证明的模式与目标校验，避免安全白名单过滤后漏掉已启用的 HTTP 转发。
+	if err := s.applyOpenAIAttestationHTTPForwarding(c, req, account, targetURL); err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 
