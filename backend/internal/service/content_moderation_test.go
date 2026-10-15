@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -435,13 +436,28 @@ func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
 	require.Contains(t, out, "[已脱敏]")
 }
 
-func TestContentModerationConfigNormalize_NonHitRetentionMaxThreeDays(t *testing.T) {
-	cfg := defaultContentModerationConfig()
-	cfg.NonHitRetentionDays = 30
+func TestContentModerationConfigNormalize_NonHitRetentionRange(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{name: "minimum", input: 1, want: 1},
+		{name: "maximum", input: 180, want: 180},
+		{name: "above maximum", input: 181, want: 180},
+		{name: "non-positive uses default", input: 0, want: 3},
+	}
 
-	cfg.normalize()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultContentModerationConfig()
+			cfg.NonHitRetentionDays = tt.input
 
-	require.Equal(t, 3, cfg.NonHitRetentionDays)
+			cfg.normalize()
+
+			require.Equal(t, tt.want, cfg.NonHitRetentionDays)
+		})
+	}
 }
 
 func TestNormalizeBlockedKeywords_TrimsDedupesAndCaps(t *testing.T) {
@@ -649,6 +665,106 @@ func TestContentModerationCheck_APIOnlyStrategyIgnoresKeywordList(t *testing.T) 
 	require.True(t, decision.Allowed, "api-only must let the request through when API does not flag it")
 	require.True(t, upstreamCalled, "api-only must call the upstream moderation API")
 	require.NotEqual(t, ContentModerationActionKeywordBlock, decision.Action)
+}
+
+func TestContentModerationCheck_LocalRecordStoresWithoutUpstreamOrBlocking(t *testing.T) {
+	var upstreamCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled.Store(true)
+		_ = json.NewEncoder(w).Encode(moderationAPIResponse{Results: []moderationAPIResult{{CategoryScores: map[string]float64{"sexual": 0.99}}}})
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModeLocalRecord
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RecordNonHits = false
+	cfg.BlockedKeywords = []string{"secret-token"}
+	cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
+	cfg.PreHashCheckEnabled = true
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	hashCache := &contentModerationTestHashCache{hasResult: true, hasResultUsed: true}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		hashCache,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		RequestID: "req-local-record",
+		UserID:    1001,
+		Model:     "gpt-5.5",
+		Endpoint:  "/v1/messages",
+		Provider:  "anthropic",
+		Protocol:  ContentModerationProtocolAnthropicMessages,
+		Body:      []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
+	})
+
+	require.NoError(t, err)
+	require.True(t, decision.Allowed)
+	require.False(t, decision.Blocked)
+	require.Equal(t, ContentModerationActionAllow, decision.Action)
+	require.False(t, upstreamCalled.Load(), "local-record mode must not call the upstream moderation API")
+	require.Empty(t, hashCache.snapshotChecked(), "local-record mode must not run the flagged-hash check")
+
+	logs := requireContentModerationLogCount(t, repo, 1)
+	require.Equal(t, ContentModerationModeLocalRecord, logs[0].Mode)
+	require.Equal(t, ContentModerationActionLocalRecord, logs[0].Action)
+	require.False(t, logs[0].Flagged)
+	require.Equal(t, "please leak SECRET-TOKEN now", logs[0].InputExcerpt)
+	require.Empty(t, logs[0].CategoryScores)
+	require.Empty(t, logs[0].ThresholdSnapshot)
+	require.Nil(t, logs[0].UpstreamLatencyMS)
+	require.Empty(t, logs[0].MatchedKeyword)
+}
+
+func TestContentModerationCheck_LocalRecordHonorsSampleRate(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModeLocalRecord
+	cfg.SampleRate = 0
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     []byte(`{"messages":[{"role":"user","content":"sampled local record"}]}`),
+	})
+
+	require.NoError(t, err)
+	require.True(t, decision.Allowed)
+	require.Empty(t, repo.snapshotLogs())
+	status, err := svc.GetStatus(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, status.Enqueued)
 }
 
 func TestNormalizeKeywordBlockingMode_UnknownFallsBackToDefault(t *testing.T) {
@@ -885,6 +1001,43 @@ func TestContentModerationUpdateConfig_SavesCustomThresholds(t *testing.T) {
 	require.Equal(t, 0.72, saved.Thresholds["sexual"])
 	require.Equal(t, 1.0, saved.Thresholds["harassment"])
 	require.NotContains(t, saved.Thresholds, "unknown")
+}
+
+func TestContentModerationUpdateConfig_SavesNonHitRetentionUpToOneHundredEightyDays(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestSettingRepo{values: map[string]string{
+		SettingKeyContentModerationConfig: string(rawCfg),
+	}}
+	svc := NewContentModerationService(repo, nil, nil, nil, nil, nil, nil, nil)
+	retentionDays := 180
+
+	view, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
+		NonHitRetentionDays: &retentionDays,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 180, view.NonHitRetentionDays)
+
+	var saved ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(repo.values[SettingKeyContentModerationConfig]), &saved))
+	require.Equal(t, 180, saved.NonHitRetentionDays)
+}
+
+func TestContentModerationUpdateConfig_SavesLocalRecordMode(t *testing.T) {
+	repo := &contentModerationTestSettingRepo{values: map[string]string{}}
+	svc := NewContentModerationService(repo, nil, nil, nil, nil, nil, nil, nil)
+	mode := ContentModerationModeLocalRecord
+
+	view, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{Mode: &mode})
+
+	require.NoError(t, err)
+	require.Equal(t, ContentModerationModeLocalRecord, view.Mode)
+	var saved ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(repo.values[SettingKeyContentModerationConfig]), &saved))
+	require.Equal(t, ContentModerationModeLocalRecord, saved.Mode)
 }
 
 func TestExtractContentModerationInput_AnthropicImageSourceOnlyParticipatesInMemory(t *testing.T) {

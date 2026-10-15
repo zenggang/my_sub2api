@@ -379,6 +379,95 @@ describe('admin RiskControlView', () => {
     expect(showError).not.toHaveBeenCalled()
   })
 
+  it('loads and saves non-hit retention up to 180 days', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), non_hit_retention_days: 180 })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.retention').trigger('click')
+    const retentionInput = wrapper.get('[data-test="non-hit-retention-days"]')
+    expect((retentionInput.element as HTMLInputElement).value).toBe('180')
+    expect(retentionInput.attributes('min')).toBe('1')
+    expect(retentionInput.attributes('max')).toBe('180')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ non_hit_retention_days: 180 }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads and saves local-record mode without requiring an audit key', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), mode: 'local_record', record_non_hits: false })
+    getStatus.mockResolvedValue({ ...runtimeStatus(), mode: 'local_record', pre_block_api_key_available_count: 0 })
+    listLogs.mockResolvedValue({
+      items: [{
+        id: 1,
+        action: 'local_record',
+        flagged: false,
+        created_at: '2026-10-15T03:00:00Z',
+        highest_category: '',
+        highest_score: 0,
+        input_excerpt: '本地留痕摘要',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.riskControl.workerStatus')
+    expect(wrapper.text()).toContain('admin.riskControl.apiKeyNotRequired')
+    expect(wrapper.text()).toContain('admin.riskControl.localRecordNoUpstream')
+    expect(wrapper.text()).toContain('admin.riskControl.action.localRecord')
+    expect(wrapper.text()).not.toContain('admin.riskControl.engineUnavailable')
+
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    const modeSelect = wrapper.getComponent('[data-test="audit-mode-select"]')
+    expect(modeSelect.props('modelValue')).toBe('local_record')
+    expect(modeSelect.props('options')).toContainEqual(expect.objectContaining({ value: 'local_record' }))
+    expect(wrapper.text()).toContain('admin.riskControl.modeLocalRecordDesc')
+
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.runtime').trigger('click')
+    expect(wrapper.get('[data-test="local-record-runtime-hint"]').text()).toContain('admin.riskControl.localRecordRuntimeHint')
+    expect(wrapper.get('[data-test="local-record-hash-disabled"]').text()).toContain('admin.riskControl.localRecordControlDisabled')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ mode: 'local_record' }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('loads and saves the Chinese summary filter', async () => {
     getConfig.mockResolvedValue({ ...baseConfig(), chinese_only: true })
     const wrapper = mount(RiskControlView, {

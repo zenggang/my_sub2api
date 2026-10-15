@@ -33,13 +33,14 @@ func TestContentModerationEngineHandlerRoundTrip(t *testing.T) {
 	router := gin.New()
 	router.PUT("/config", h.UpdateConfig)
 	router.GET("/config", h.GetConfig)
-	body := `{"engine":"typesafe","engine_configs":{"typesafe":{"base_url":"https://api.typesafe.ai","model":"jev-latest","api_keys":["new-secret"],"thresholds":{"sexual":0.91}}}}`
+	body := `{"engine":"typesafe","mode":"local_record","engine_configs":{"typesafe":{"base_url":"https://api.typesafe.ai","model":"jev-latest","api_keys":["new-secret"],"thresholds":{"sexual":0.91}}}}`
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 	require.Equal(t, 200, w.Code)
 	require.Contains(t, w.Body.String(), `"engine":"typesafe"`)
+	require.Contains(t, w.Body.String(), `"mode":"local_record"`)
 	require.Contains(t, w.Body.String(), `"sexual":0.91`)
 	require.NotContains(t, w.Body.String(), "new-secret")
 	require.NotContains(t, w.Body.String(), "legacy-secret")
@@ -47,7 +48,9 @@ func TestContentModerationEngineHandlerRoundTrip(t *testing.T) {
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 	require.Equal(t, 200, w.Code)
 	require.Contains(t, w.Body.String(), `"engine_configs"`)
+	require.Contains(t, w.Body.String(), `"mode":"local_record"`)
 	require.Contains(t, w.Body.String(), `"model":"jev-latest"`)
 	require.Contains(t, settings.value, "legacy-secret")
 	require.Contains(t, settings.value, "new-secret")
+	require.Contains(t, settings.value, `"mode":"local_record"`)
 }

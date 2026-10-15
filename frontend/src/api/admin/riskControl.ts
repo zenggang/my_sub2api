@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 
-export type ModerationMode = 'off' | 'observe' | 'pre_block'
+export type ModerationMode = 'off' | 'observe' | 'pre_block' | 'local_record'
 export type ModerationEngine = 'openai' | 'typesafe'
 export interface ModerationEngineMeta {
   engine: ModerationEngine

@@ -27,7 +27,7 @@ func TestContentModerationCheck_ChineseExcerptFilter(t *testing.T) {
 		{name: "ChineseAt501", text: strings.Repeat("a", 500) + "中"},
 		{name: "ChineseAfter240", text: strings.Repeat("a", 300) + "中文", chinese: true},
 	}
-	for _, mode := range []string{ContentModerationModePreBlock, ContentModerationModeObserve} {
+	for _, mode := range []string{ContentModerationModePreBlock, ContentModerationModeObserve, ContentModerationModeLocalRecord} {
 		for _, tc := range cases {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				var calls atomic.Int64
@@ -62,14 +62,23 @@ func TestContentModerationCheck_ChineseExcerptFilter(t *testing.T) {
 					require.Empty(t, cache.snapshotChecked())
 					return
 				}
-				require.Len(t, cache.snapshotChecked(), 1)
+				if mode == ContentModerationModeLocalRecord {
+					require.Empty(t, cache.snapshotChecked())
+				} else {
+					require.Len(t, cache.snapshotChecked(), 1)
+				}
 				require.Len(t, svc.asyncQueue, 1)
 				task := <-svc.asyncQueue
 				if mode == ContentModerationModeObserve {
 					require.Zero(t, calls.Load())
 					require.Equal(t, tc.text, task.content.Text)
 				} else {
-					require.EqualValues(t, 1, calls.Load())
+					if mode == ContentModerationModeLocalRecord {
+						require.Zero(t, calls.Load())
+						require.Equal(t, ContentModerationActionLocalRecord, task.log.Action)
+					} else {
+						require.EqualValues(t, 1, calls.Load())
+					}
 					require.Equal(t, trimRunes(tc.text, 500), task.log.InputExcerpt)
 				}
 			})

@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	ContentModerationModeOff      = "off"
-	ContentModerationModeObserve  = "observe"
-	ContentModerationModePreBlock = "pre_block"
+	ContentModerationModeOff         = "off"
+	ContentModerationModeObserve     = "observe"
+	ContentModerationModePreBlock    = "pre_block"
+	ContentModerationModeLocalRecord = "local_record"
 
 	contentModerationAPIKeysModeAppend  = "append"
 	contentModerationAPIKeysModeReplace = "replace"
@@ -40,6 +41,7 @@ const (
 	ContentModerationActionHashBlock    = "hash_block"
 	ContentModerationActionKeywordBlock = "keyword_block"
 	ContentModerationActionError        = "error"
+	ContentModerationActionLocalRecord  = "local_record"
 	ContentModerationActionCyberPolicy  = "cyber_policy" // cyber_policy 硬阻断的风控日志 action（封号计数排除按此值过滤）
 
 	contentModerationKeywordCategory = "keyword"
@@ -80,7 +82,7 @@ const (
 	defaultContentModerationHitRetentionDays     = 180
 	defaultContentModerationNonHitRetentionDays  = 3
 	maxContentModerationRetentionDays            = 3650
-	maxContentModerationNonHitRetentionDays      = 3
+	maxContentModerationNonHitRetentionDays      = 180
 	contentModerationKeyRateLimitFreezeDuration  = time.Minute
 	contentModerationKeyAuthFreezeDuration       = 10 * time.Minute
 	contentModerationKeyHTTPErrorFreezeDuration  = 10 * time.Second
@@ -1034,6 +1036,30 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"text_runes", len([]rune(content.Text)),
 		"image_count", len(content.Images))
 	hashText := content.Hash()
+	if cfg.Mode == ContentModerationModeLocalRecord {
+		if !cfg.shouldSample(hashText) {
+			slog.Info("content_moderation.skip_local_record_sample_rate",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"group_id", contentModerationLogGroupID(input.GroupID),
+				"endpoint", input.Endpoint,
+				"protocol", input.Protocol,
+				"sample_rate", cfg.SampleRate)
+			return allow, nil
+		}
+		// 本地留痕只保存请求摘要和上下文，不执行关键词、哈希、上游审核及命中副作用。
+		log := s.buildLog(input, cfg, ContentModerationActionLocalRecord, false, "", 0, map[string]float64{}, content.ExcerptText(), nil, nil, "")
+		log.ThresholdSnapshot = map[string]float64{}
+		s.enqueueRecord(input, cfg, log, hashText, false, false)
+		slog.Info("content_moderation.local_record_enqueued",
+			"user_id", input.UserID,
+			"api_key_id", input.APIKeyID,
+			"group_id", contentModerationLogGroupID(input.GroupID),
+			"endpoint", input.Endpoint,
+			"protocol", input.Protocol,
+			"input_hash", hashText)
+		return allow, nil
+	}
 	if cfg.PreHashCheckEnabled && s.hashCache != nil {
 		matched, err := s.hashCache.HasFlaggedInputHash(ctx, hashText)
 		if err != nil {
@@ -1742,7 +1768,7 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_ENGINE", "内容审计引擎无效")
 	}
 	switch cfg.Mode {
-	case ContentModerationModeOff, ContentModerationModeObserve, ContentModerationModePreBlock:
+	case ContentModerationModeOff, ContentModerationModeObserve, ContentModerationModePreBlock, ContentModerationModeLocalRecord:
 	default:
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_MODE", "内容审计模式无效")
 	}
@@ -1954,7 +1980,7 @@ func (s *ContentModerationService) buildLog(input ContentModerationCheckInput, c
 		apiKeyID = &input.APIKeyID
 	}
 	mode := cfg.Mode
-	if input.riskControlLogOnly {
+	if input.riskControlLogOnly && cfg.Mode != ContentModerationModeLocalRecord {
 		mode = ContentModerationModeRiskControlLogOnly
 		action = ContentModerationActionAllow
 	}
@@ -2305,6 +2331,7 @@ func (cfg *ContentModerationConfig) normalize() {
 	if cfg.NonHitRetentionDays <= 0 {
 		cfg.NonHitRetentionDays = defaultContentModerationNonHitRetentionDays
 	}
+	// 内部审计允许按需追溯未命中记录，但保留期仍需有上限，避免日志无界增长。
 	if cfg.NonHitRetentionDays > maxContentModerationNonHitRetentionDays {
 		cfg.NonHitRetentionDays = maxContentModerationNonHitRetentionDays
 	}

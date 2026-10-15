@@ -26,7 +26,7 @@
         <p class="text-sm text-gray-600 dark:text-gray-300" data-test="active-audit-engine">
           {{ t('admin.riskControl.activeEngine', { engine: engineLabel(status?.engine ?? savedEngine) }) }}
         </p>
-        <p v-if="status?.enabled && status.risk_control_enabled && status.mode !== 'off' && status.pre_block_api_key_available_count === 0" class="text-sm text-amber-700 dark:text-amber-300" role="status">
+        <p v-if="status?.enabled && status.risk_control_enabled && status.mode !== 'off' && status.mode !== 'local_record' && status.pre_block_api_key_available_count === 0" class="text-sm text-amber-700 dark:text-amber-300" role="status">
           {{ t('admin.riskControl.engineUnavailable') }}
         </p>
 
@@ -405,7 +405,7 @@
               </div>
               <div>
                 <label class="input-label">{{ t('admin.riskControl.mode') }}</label>
-                <Select v-model="configForm.mode" :options="modeOptions" />
+                <Select v-model="configForm.mode" data-test="audit-mode-select" :options="modeOptions" />
                 <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ modeDescription(configForm.mode) }}</p>
               </div>
               <div>
@@ -836,7 +836,10 @@
               <label class="input-label">{{ t('admin.riskControl.queueSize') }}</label>
               <input v-model.number="configForm.queue_size" type="number" min="100" max="100000" class="input" />
             </div>
-            <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+            <div v-if="configForm.mode === 'local_record'" data-test="local-record-runtime-hint" class="rounded-lg border border-primary-100 bg-primary-50/60 p-4 text-sm text-primary-700 dark:border-primary-900/40 dark:bg-primary-900/10 dark:text-primary-200 lg:col-span-2">
+              {{ t('admin.riskControl.localRecordRuntimeHint') }}
+            </div>
+            <div v-else class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
               <div>
                 <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.recordNonHits') }}</p>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.recordNonHitsHint') }}</p>
@@ -849,7 +852,10 @@
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.preHashCheck') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.preHashCheckHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.pre_hash_check_enabled" />
+                <Toggle v-if="configForm.mode !== 'local_record'" v-model="configForm.pre_hash_check_enabled" />
+                <span v-else data-test="local-record-hash-disabled" class="text-xs font-medium text-gray-400 dark:text-gray-500">
+                  {{ t('admin.riskControl.localRecordControlDisabled') }}
+                </span>
               </div>
               <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/30">
                 <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -1062,7 +1068,14 @@
             </div>
             <div>
               <label class="input-label">{{ t('admin.riskControl.nonHitRetentionDays') }}</label>
-              <input v-model.number="configForm.non_hit_retention_days" type="number" min="1" max="3" class="input" />
+              <input
+                v-model.number="configForm.non_hit_retention_days"
+                data-test="non-hit-retention-days"
+                type="number"
+                min="1"
+                :max="maxNonHitRetentionDays"
+                class="input"
+              />
             </div>
             <div class="rounded-lg border border-gray-100 p-4 text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400 lg:col-span-2">
               <div class="flex flex-wrap items-center gap-3">
@@ -1215,6 +1228,7 @@ const maxModerationTestImages = 1
 const maxModerationTestImageSize = 8 * 1024 * 1024
 const maxVisibleApiKeyRows: number = 3
 const blockedKeywordMax = 10000
+const maxNonHitRetentionDays = 180
 const riskThresholdDefaults: Record<string, number> = {
   harassment: 98,
   'harassment/threatening': 90,
@@ -1413,6 +1427,7 @@ const settingsTabs = computed<Array<{ id: SettingsTab; label: string }>>(() => [
 const modeOptions = computed<SelectOption[]>(() => [
   { value: 'pre_block', label: t('admin.riskControl.modePreBlock') },
   { value: 'observe', label: t('admin.riskControl.modeObserve') },
+  { value: 'local_record', label: t('admin.riskControl.modeLocalRecord') },
   { value: 'off', label: t('admin.riskControl.modeOff') },
 ])
 
@@ -1659,8 +1674,16 @@ const overviewItems = computed<OverviewItem[]>(() => [
   {
     key: 'api-key',
     label: t('admin.riskControl.overview.apiKey'),
-    value: configForm.api_key_configured ? t('admin.riskControl.apiKeyCount', { count: configForm.api_key_count }) : t('admin.riskControl.notConfigured'),
-    meta: configForm.api_key_configured ? apiKeyHealthSummary.value || configForm.model || '-' : configForm.model || '-',
+    value: configForm.mode === 'local_record'
+      ? t('admin.riskControl.apiKeyNotRequired')
+      : configForm.api_key_configured
+        ? t('admin.riskControl.apiKeyCount', { count: configForm.api_key_count })
+        : t('admin.riskControl.notConfigured'),
+    meta: configForm.mode === 'local_record'
+      ? t('admin.riskControl.localRecordNoUpstream')
+      : configForm.api_key_configured
+        ? apiKeyHealthSummary.value || configForm.model || '-'
+        : configForm.model || '-',
     icon: 'key',
     iconClass: 'bg-sky-50 text-sky-600 dark:bg-sky-900/20 dark:text-sky-300',
   },
@@ -1721,7 +1744,7 @@ const runtimeMode = computed<ModerationMode>(() => status.value?.mode ?? configF
 
 const showPreBlockRuntimeCard = computed(() => runtimeMode.value === 'pre_block')
 
-const showWorkerRuntimeCard = computed(() => runtimeMode.value === 'observe')
+const showWorkerRuntimeCard = computed(() => runtimeMode.value === 'observe' || runtimeMode.value === 'local_record')
 
 const preBlockMetricItems = computed(() => [
   {
@@ -1856,7 +1879,7 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.ban_threshold = config.ban_threshold || 10
   configForm.violation_window_hours = config.violation_window_hours || 720
   configForm.hit_retention_days = config.hit_retention_days || 180
-  configForm.non_hit_retention_days = Math.min(Math.max(config.non_hit_retention_days || 3, 1), 3)
+  configForm.non_hit_retention_days = Math.min(Math.max(config.non_hit_retention_days || 3, 1), maxNonHitRetentionDays)
   configForm.pre_hash_check_enabled = config.pre_hash_check_enabled ?? false
   configForm.thresholds = riskThresholdsFromConfig(config.thresholds)
   configForm.blocked_keywords_text = Array.isArray(config.blocked_keywords) ? config.blocked_keywords.join('\n') : ''
@@ -1951,7 +1974,7 @@ async function saveConfig() {
       ban_threshold: Number(configForm.ban_threshold) || 10,
       violation_window_hours: Number(configForm.violation_window_hours) || 720,
       hit_retention_days: Number(configForm.hit_retention_days) || 180,
-      non_hit_retention_days: Math.min(Math.max(Number(configForm.non_hit_retention_days) || 3, 1), 3),
+      non_hit_retention_days: Math.min(Math.max(Number(configForm.non_hit_retention_days) || 3, 1), maxNonHitRetentionDays),
       pre_hash_check_enabled: configForm.pre_hash_check_enabled,
       thresholds: buildRiskThresholdPayload(),
       blocked_keywords: blockedKeywordList.value,
@@ -2267,12 +2290,14 @@ function modeDescription(mode: ModerationMode): string {
   const descriptions: Record<ModerationMode, string> = {
     pre_block: t('admin.riskControl.modePreBlockDesc'),
     observe: t('admin.riskControl.modeObserveDesc'),
+    local_record: t('admin.riskControl.modeLocalRecordDesc'),
     off: t('admin.riskControl.modeOffDesc'),
   }
   return descriptions[mode] ?? ''
 }
 
 function resultLabel(row: ContentModerationLog): string {
+  if (row.action === 'local_record') return t('admin.riskControl.action.localRecord')
   if (row.action === 'cyber_policy') return t('admin.riskControl.action.cyberPolicy')
   if (row.action === 'keyword_block') return t('admin.riskControl.action.keywordBlock')
   if (row.action === 'block') return t('admin.riskControl.action.block')
