@@ -385,6 +385,7 @@
             <button
               v-for="tab in settingsTabs"
               :key="tab.id"
+              :data-test="tab.id === 'excerptGroups' ? 'excerpt-groups-tab' : undefined"
               type="button"
               class="inline-flex whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors"
               :class="activeSettingsTab === tab.id ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-dark-700 dark:hover:text-white'"
@@ -827,6 +828,52 @@
             </div>
           </div>
 
+          <div v-else-if="activeSettingsTab === 'excerptGroups'" data-test="excerpt-groups-settings" class="space-y-5">
+            <div data-test="excerpt-default-rule" class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.excerptGroups.defaultRule', { count: defaultExcerptMaxChars }) }}</p>
+              <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.excerptGroups.hint') }}</p>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.excerptGroups.membershipHint') }}</p>
+              <button type="button" data-test="excerpt-group-add" class="btn btn-secondary inline-flex items-center gap-2" @click="addExcerptGroup">
+                <Icon name="plus" size="sm" />
+                {{ t('admin.riskControl.excerptGroups.add') }}
+              </button>
+            </div>
+
+            <p v-if="configForm.excerpt_groups.length === 0" class="rounded-lg border border-dashed border-gray-200 p-6 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400">
+              {{ t('admin.riskControl.excerptGroups.empty') }}
+            </p>
+            <div v-for="(group, index) in configForm.excerpt_groups" :key="index" :data-test="`excerpt-group-${index}`" class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.excerptGroups.groupNumber', { index: index + 1 }) }}</p>
+                <button type="button" :data-test="`excerpt-group-remove-${index}`" class="btn btn-secondary inline-flex items-center gap-2" @click="configForm.excerpt_groups.splice(index, 1)">
+                  <Icon name="trash" size="sm" />
+                  {{ t('common.delete') }}
+                </button>
+              </div>
+              <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div>
+                  <label :for="`excerpt-group-name-${index}`" class="input-label">{{ t('admin.riskControl.excerptGroups.name') }}</label>
+                  <input :id="`excerpt-group-name-${index}`" v-model="group.name" :data-test="`excerpt-group-name-${index}`" type="text" class="input" />
+                </div>
+                <div>
+                  <label :for="`excerpt-group-max-chars-${index}`" class="input-label">{{ t('admin.riskControl.excerptGroups.maxChars') }}</label>
+                  <input :id="`excerpt-group-max-chars-${index}`" v-model.number="group.max_chars" :data-test="`excerpt-group-max-chars-${index}`" type="number" min="1" :max="maxExcerptMaxChars" step="1" class="input" />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.excerptGroups.maxCharsHint', { max: maxExcerptMaxChars }) }}</p>
+                </div>
+              </div>
+              <div>
+                <label :for="`excerpt-group-uids-${index}`" class="input-label">{{ t('admin.riskControl.excerptGroups.userIDs') }}</label>
+                <textarea :id="`excerpt-group-uids-${index}`" v-model="group.user_ids_text" :data-test="`excerpt-group-uids-${index}`" rows="3" class="input font-mono" :placeholder="t('admin.riskControl.excerptGroups.userIDsPlaceholder')" @blur="normalizeExcerptGroupUserIDs(group)"></textarea>
+                <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.excerptGroups.userIDsHint') }}</p>
+                <p :data-test="`excerpt-group-user-count-${index}`" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.excerptGroups.userCount', { count: excerptGroupUserCount(group) }) }}</p>
+              </div>
+            </div>
+            <p v-if="showExcerptGroupErrors && excerptGroupsResult.error" data-test="excerpt-groups-validation" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ excerptGroupsResult.error }}</p>
+          </div>
+
           <div v-else-if="activeSettingsTab === 'runtime'" class="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <div>
               <label class="input-label">{{ t('admin.riskControl.workerCount') }}</label>
@@ -1182,6 +1229,7 @@ import type {
   ContentModerationAPIKeyLoad,
   ContentModerationAPIKeyStatus,
   ContentModerationConfig,
+  ContentModerationExcerptGroup,
   ContentModerationLog,
   ContentModerationModelFilter,
   ContentModerationModelFilterType,
@@ -1198,7 +1246,8 @@ import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
 
-type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
+type SettingsTab = 'basic' | 'scope' | 'excerptGroups' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
+type ExcerptGroupDraft = { name: string; max_chars: number | string; user_ids_text: string }
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
 type APIKeysWriteMode = 'append' | 'replace'
 type OverviewIcon = 'shield' | 'key' | 'users' | 'document'
@@ -1229,6 +1278,8 @@ const maxModerationTestImageSize = 8 * 1024 * 1024
 const maxVisibleApiKeyRows: number = 3
 const blockedKeywordMax = 10000
 const maxNonHitRetentionDays = 180
+const defaultExcerptMaxChars = 500
+const maxExcerptMaxChars = 12000
 const riskThresholdDefaults: Record<string, number> = {
   harassment: 98,
   'harassment/threatening': 90,
@@ -1291,6 +1342,8 @@ const apiKeyTesting = ref(false)
 const hashActionLoading = ref(false)
 const unbanningUserID = ref<number | null>(null)
 const settingsOpen = ref(false)
+const savedExcerptGroups = ref<ContentModerationExcerptGroup[]>([])
+const showExcerptGroupErrors = ref(false)
 const activeSettingsTab = ref<SettingsTab>('basic')
 const groupSearch = ref('')
 const flaggedHashInput = ref('')
@@ -1331,6 +1384,7 @@ const configForm = reactive({
   all_groups: true,
   group_ids: [] as number[],
   chinese_only: false,
+  excerpt_groups: [] as ExcerptGroupDraft[],
   record_non_hits: false,
   worker_count: 4,
   queue_size: 32768,
@@ -1417,12 +1471,62 @@ const filters = reactive({
 const settingsTabs = computed<Array<{ id: SettingsTab; label: string }>>(() => [
   { id: 'basic', label: t('admin.riskControl.tabs.basic') },
   { id: 'scope', label: t('admin.riskControl.tabs.scope') },
+  { id: 'excerptGroups', label: t('admin.riskControl.tabs.excerptGroups') },
   { id: 'runtime', label: t('admin.riskControl.tabs.runtime') },
   { id: 'response', label: t('admin.riskControl.tabs.response') },
   { id: 'riskThresholds', label: t('admin.riskControl.tabs.riskThresholds') },
   { id: 'keywords', label: t('admin.riskControl.tabs.keywords') },
   { id: 'retention', label: t('admin.riskControl.tabs.retention') },
 ])
+
+function excerptGroupDrafts(groups: ContentModerationExcerptGroup[]): ExcerptGroupDraft[] {
+  return groups.map(group => ({ name: group.name, max_chars: group.max_chars, user_ids_text: group.user_ids.join('\n') }))
+}
+
+function addExcerptGroup() {
+  configForm.excerpt_groups.push({ name: '', max_chars: 1000, user_ids_text: '' })
+}
+
+function excerptGroupUserCount(draft: ExcerptGroupDraft): number {
+  return new Set(draft.user_ids_text.split(/[,，\s]+/).filter(token => /^\d+$/.test(token) && Number.isSafeInteger(Number(token)) && Number(token) > 0).map(Number)).size
+}
+
+function normalizeExcerptGroupUserIDs(draft: ExcerptGroupDraft) {
+  const tokens = draft.user_ids_text.split(/[,，\s]+/).filter(Boolean)
+  // 只规范化完全合法的名单，保留非法原文供管理员修正，避免静默丢失 UID。
+  if (tokens.every(token => /^\d+$/.test(token) && Number.isSafeInteger(Number(token)) && Number(token) > 0)) {
+    draft.user_ids_text = [...new Set(tokens.map(Number))].join('\n')
+  }
+}
+
+const excerptGroupsResult = computed<{ groups: ContentModerationExcerptGroup[]; error: string }>(() => {
+  const groups: ContentModerationExcerptGroup[] = []
+  const userGroups = new Map<number, string>()
+  for (const [index, draft] of configForm.excerpt_groups.entries()) {
+    const name = draft.name.trim()
+    if (!name) return { groups: [], error: t('admin.riskControl.excerptGroups.nameRequired', { index: index + 1 }) }
+    const maxChars = Number(draft.max_chars)
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > maxExcerptMaxChars) {
+      return { groups: [], error: t('admin.riskControl.excerptGroups.invalidMaxChars', { group: name, max: maxExcerptMaxChars }) }
+    }
+    const userIDs = new Set<number>()
+    // UID 只能完整匹配正整数；不能用 parseInt 将 33abc、33.5 等非法输入截成另一个用户。
+    for (const token of draft.user_ids_text.split(/[,，\s]+/).filter(Boolean)) {
+      const userID = Number(token)
+      if (!/^\d+$/.test(token) || !Number.isSafeInteger(userID) || userID <= 0) {
+        return { groups: [], error: t('admin.riskControl.excerptGroups.invalidUserID', { group: name, uid: token }) }
+      }
+      const previousGroup = userGroups.get(userID)
+      if (previousGroup !== undefined) {
+        return { groups: [], error: t('admin.riskControl.excerptGroups.duplicateUserID', { uid: userID, first: previousGroup, second: name }) }
+      }
+      userIDs.add(userID)
+    }
+    for (const userID of userIDs) userGroups.set(userID, name)
+    groups.push({ name, max_chars: maxChars, user_ids: [...userIDs] })
+  }
+  return { groups, error: '' }
+})
 
 const modeOptions = computed<SelectOption[]>(() => [
   { value: 'pre_block', label: t('admin.riskControl.modePreBlock') },
@@ -1869,6 +1973,10 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
   configForm.record_non_hits = config.record_non_hits
   configForm.chinese_only = config.chinese_only ?? false
+  // 旧版本可能缺省或返回 null；复制名单后再转成表单，取消编辑不会修改已保存配置。
+  savedExcerptGroups.value = (config.excerpt_groups ?? []).map(group => ({ ...group, user_ids: Array.isArray(group.user_ids) ? [...group.user_ids] : [] }))
+  configForm.excerpt_groups = excerptGroupDrafts(savedExcerptGroups.value)
+  showExcerptGroupErrors.value = false
   configForm.worker_count = config.worker_count || 4
   configForm.queue_size = config.queue_size || 32768
   configForm.block_status = config.block_status || 403
@@ -1943,6 +2051,13 @@ async function loadStatus(silent = true) {
 async function saveConfig() {
   saving.value = true
   try {
+    const excerptGroups = excerptGroupsResult.value
+    if (excerptGroups.error) {
+      showExcerptGroupErrors.value = true
+      activeSettingsTab.value = 'excerptGroups'
+      appStore.showError(excerptGroups.error)
+      return
+    }
     const modelFilterPayload = buildModelFilterPayload()
     if (modelFilterPayload.type !== 'all' && modelFilterPayload.models.length === 0) {
       appStore.showError(t('admin.riskControl.modelFilterModelsRequired'))
@@ -1962,6 +2077,7 @@ async function saveConfig() {
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
       chinese_only: configForm.chinese_only,
+      excerpt_groups: excerptGroups.groups,
       record_non_hits: configForm.record_non_hits,
       clear_api_key: configForm.clear_api_key,
       worker_count: Number(configForm.worker_count) || 4,
@@ -2100,6 +2216,9 @@ async function clearFlaggedHashes() {
 }
 
 function openSettings() {
+  // 摘要分组属于共享设置；重开恢复最后保存值，切换审核引擎则继续保留当前编辑草稿。
+  configForm.excerpt_groups = excerptGroupDrafts(savedExcerptGroups.value)
+  showExcerptGroupErrors.value = false
   activeSettingsTab.value = 'basic'
   settingsOpen.value = true
 }

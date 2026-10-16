@@ -69,6 +69,7 @@ vi.mock('vue-i18n', async () => {
         if (key === 'admin.riskControl.preBlockAPIKeyLoadSummary') {
           return `同步并发 ${params?.active} / 可用 Key ${params?.available}，累计 ${params?.total} 次，worker：${params?.workerActive} / ${params?.workerTotal}`
         }
+        if (key.startsWith('admin.riskControl.excerptGroups.') && params) return `${key} ${JSON.stringify(params)}`
         return key.replace(/\{(\w+)\}/g, (_, token) => String(params?.[token] ?? `{${token}}`))
       },
     }),
@@ -193,6 +194,27 @@ function findButtonByText(wrapper: VueWrapper, text: string): DOMWrapper<HTMLBut
   return button
 }
 
+async function openExcerptGroupSettings() {
+  const wrapper = mount(RiskControlView, {
+    global: {
+      stubs: {
+        AppLayout: AppLayoutStub,
+        BaseDialog: BaseDialogStub,
+        Icon: true,
+        Select: true,
+        Toggle: true,
+        Pagination: true,
+        ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        ProxySelector: true,
+      },
+    },
+  })
+  await flushPromises()
+  await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+  await wrapper.get('[data-test="excerpt-groups-tab"]').trigger('click')
+  return wrapper
+}
+
 describe('admin RiskControlView', () => {
   beforeEach(() => {
     getConfig.mockReset()
@@ -219,6 +241,171 @@ describe('admin RiskControlView', () => {
       api_key_masks: [],
       api_key_statuses: [],
     }))
+  })
+
+  it.each([undefined, null])('shows the fixed default excerpt rule for an older configuration with %s groups', async (excerptGroups) => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: excerptGroups })
+    const wrapper = await openExcerptGroupSettings()
+
+    expect(wrapper.get('[data-test="excerpt-default-rule"]').text()).toContain('500')
+    expect(wrapper.get('[data-test="excerpt-default-rule"]').find('input').exists()).toBe(false)
+    expect(wrapper.find('[data-test="excerpt-group-0"]').exists()).toBe(false)
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ excerpt_groups: [] }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('adds custom excerpt groups, normalizes batch UIDs, and saves empty groups', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), chinese_only: true })
+    const wrapper = await openExcerptGroupSettings()
+    await wrapper.get('[data-test="excerpt-group-add"]').trigger('click')
+    await wrapper.get('[data-test="excerpt-group-name-0"]').setValue('  扩展组 A  ')
+    await wrapper.get('[data-test="excerpt-group-max-chars-0"]').setValue('1000')
+    const uids = wrapper.get('[data-test="excerpt-group-uids-0"]')
+    await uids.setValue('33, 34\n33 35，034')
+    await uids.trigger('blur')
+    expect((uids.element as HTMLTextAreaElement).value).toBe('33\n34\n35')
+    expect(wrapper.get('[data-test="excerpt-group-user-count-0"]').text()).toContain('"count":3')
+    await wrapper.get('[data-test="excerpt-group-add"]').trigger('click')
+    await wrapper.get('[data-test="excerpt-group-name-1"]').setValue('扩展组 B')
+    await wrapper.get('[data-test="excerpt-group-max-chars-1"]').setValue('800')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      chinese_only: true,
+      excerpt_groups: [
+        { name: '扩展组 A', max_chars: 1000, user_ids: [33, 34, 35] },
+        { name: '扩展组 B', max_chars: 800, user_ids: [] },
+      ],
+    }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads an empty group whose API UID list is null and saves it as an array', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: [{ name: '空组', max_chars: 800, user_ids: null }] })
+    const wrapper = await openExcerptGroupSettings()
+    expect((wrapper.get('[data-test="excerpt-group-uids-0"]').element as HTMLTextAreaElement).value).toBe('')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ excerpt_groups: [{ name: '空组', max_chars: 800, user_ids: [] }] }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads and edits a saved group while retaining the shared draft across engine switches', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: [{ name: '扩展组 A', max_chars: 1000, user_ids: [33, 34] }] })
+    const wrapper = await openExcerptGroupSettings()
+    expect((wrapper.get('[data-test="excerpt-group-uids-0"]').element as HTMLTextAreaElement).value).toBe('33\n34')
+    expect(wrapper.get('[data-test="excerpt-group-max-chars-0"]').attributes()).toMatchObject({ min: '1', max: '12000', step: '1' })
+    await wrapper.get('[data-test="excerpt-group-name-0"]').setValue('800 字组')
+    await wrapper.get('[data-test="excerpt-group-max-chars-0"]').setValue('800')
+    await wrapper.get('[data-test="excerpt-group-uids-0"]').setValue('34,36')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.basic').trigger('click')
+    wrapper.findComponent('[data-test="audit-engine-select"]').vm.$emit('update:modelValue', 'typesafe')
+    await flushPromises()
+    await wrapper.get('[data-test="excerpt-groups-tab"]').trigger('click')
+    expect((wrapper.get('[data-test="excerpt-group-max-chars-0"]').element as HTMLInputElement).value).toBe('800')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ engine: 'typesafe', excerpt_groups: [{ name: '800 字组', max_chars: 800, user_ids: [34, 36] }] }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('discards cancelled group edits without mutating the saved configuration', async () => {
+    const saved = { ...baseConfig(), excerpt_groups: [{ name: '扩展组 A', max_chars: 1000, user_ids: [33] }] }
+    getConfig.mockResolvedValue(saved)
+    const wrapper = await openExcerptGroupSettings()
+    await wrapper.get('[data-test="excerpt-group-name-0"]').setValue('未保存')
+    await wrapper.get('[data-test="excerpt-group-max-chars-0"]').setValue('800')
+    await wrapper.get('[data-test="excerpt-group-uids-0"]').setValue('35')
+    await wrapper.get('[data-test="excerpt-group-add"]').trigger('click')
+    await findButtonByText(wrapper, 'common.cancel').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await wrapper.get('[data-test="excerpt-groups-tab"]').trigger('click')
+
+    expect((wrapper.get('[data-test="excerpt-group-name-0"]').element as HTMLInputElement).value).toBe('扩展组 A')
+    expect((wrapper.get('[data-test="excerpt-group-max-chars-0"]').element as HTMLInputElement).value).toBe('1000')
+    expect((wrapper.get('[data-test="excerpt-group-uids-0"]').element as HTMLTextAreaElement).value).toBe('33')
+    expect(wrapper.find('[data-test="excerpt-group-1"]').exists()).toBe(false)
+    expect(saved.excerpt_groups).toEqual([{ name: '扩展组 A', max_chars: 1000, user_ids: [33] }])
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('deletes the last excerpt group and explicitly saves an empty array', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: [{ name: '扩展组 A', max_chars: 1000, user_ids: [33] }] })
+    const wrapper = await openExcerptGroupSettings()
+    await wrapper.get('[data-test="excerpt-group-remove-0"]').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ excerpt_groups: [] }))
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await wrapper.get('[data-test="excerpt-groups-tab"]').trigger('click')
+    expect(wrapper.find('[data-test="excerpt-group-0"]').exists()).toBe(false)
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each([
+    { name: ' ', maxChars: '1000', uid: '33', error: 'nameRequired' },
+    { name: '扩展组', maxChars: '', uid: '33', error: 'invalidMaxChars' },
+    { name: '扩展组', maxChars: '0', uid: '33', error: 'invalidMaxChars' },
+    { name: '扩展组', maxChars: '12001', uid: '33', error: 'invalidMaxChars' },
+    { name: '扩展组', maxChars: '800.5', uid: '33', error: 'invalidMaxChars' },
+    ...['0', '-33', '33abc', '33.5', '3e1', '9007199254740992'].map(uid => ({ name: '扩展组', maxChars: '1000', uid, error: 'invalidUserID' })),
+  ])('rejects invalid group input: $name / $maxChars / $uid', async ({ name, maxChars, uid, error }) => {
+    const wrapper = await openExcerptGroupSettings()
+    await wrapper.get('[data-test="excerpt-group-add"]').trigger('click')
+    await wrapper.get('[data-test="excerpt-group-name-0"]').setValue(name)
+    await wrapper.get('[data-test="excerpt-group-max-chars-0"]').setValue(maxChars)
+    const input = wrapper.get('[data-test="excerpt-group-uids-0"]')
+    await input.setValue(uid)
+    await input.trigger('blur')
+    expect((input.element as HTMLTextAreaElement).value).toBe(uid)
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.basic').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith(expect.stringContaining(`admin.riskControl.excerptGroups.${error}`))
+    expect(wrapper.get('[data-test="excerpt-groups-validation"]').text()).toContain(error)
+    wrapper.unmount()
+  })
+
+  it('rejects a UID assigned to multiple groups and identifies both groups', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: [{ name: '1000 字组', max_chars: 1000, user_ids: [33] }] })
+    const wrapper = await openExcerptGroupSettings()
+    await wrapper.get('[data-test="excerpt-group-add"]').trigger('click')
+    await wrapper.get('[data-test="excerpt-group-name-1"]').setValue('800 字组')
+    await wrapper.get('[data-test="excerpt-group-max-chars-1"]').setValue('800')
+    await wrapper.get('[data-test="excerpt-group-uids-1"]').setValue('033')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    const error = wrapper.get('[data-test="excerpt-groups-validation"]').text()
+    expect(error).toContain('duplicateUserID')
+    expect(error).toContain('33')
+    expect(error).toContain('1000 字组')
+    expect(error).toContain('800 字组')
+    wrapper.unmount()
+  })
+
+  it.each([1, 12000])('accepts a configured excerpt limit at the %i character boundary', async (maxChars) => {
+    getConfig.mockResolvedValue({ ...baseConfig(), excerpt_groups: [{ name: '边界组', max_chars: maxChars, user_ids: [33] }] })
+    const wrapper = await openExcerptGroupSettings()
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ excerpt_groups: [{ name: '边界组', max_chars: maxChars, user_ids: [33] }] }))
+    expect(showError).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it.each(['openai', 'typesafe'] as const)('shows the selected draft engine keys while %s remains active', async (activeEngine) => {

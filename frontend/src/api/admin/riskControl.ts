@@ -16,6 +16,12 @@ export interface ContentModerationModelFilter {
   models: string[]
 }
 
+export interface ContentModerationExcerptGroup {
+  name: string
+  max_chars: number
+  user_ids: number[]
+}
+
 export interface ContentModerationConfig {
   engine?: ModerationEngine
   engine_configs?: Record<ModerationEngine, ContentModerationConfig>
@@ -34,6 +40,7 @@ export interface ContentModerationConfig {
   all_groups: boolean
   group_ids: number[]
   chinese_only: boolean
+  excerpt_groups?: ContentModerationExcerptGroup[] | null
   record_non_hits: boolean
   thresholds: Record<string, number>
   worker_count: number
@@ -120,6 +127,8 @@ export interface UpdateContentModerationConfig {
   all_groups?: boolean
   group_ids?: number[]
   chinese_only?: boolean
+  // undefined/null 保留已有配置；空数组清空全部摘要长度分组。
+  excerpt_groups?: ContentModerationExcerptGroup[] | null
   record_non_hits?: boolean
   thresholds?: Record<string, number>
   worker_count?: number

@@ -21,4 +21,20 @@ describe('risk control locale copy', () => {
     expect(zh.admin.riskControl.preBlockAPIKeyLoadHint).not.toContain('Worker 池')
     expect(en.admin.riskControl.preBlockAPIKeyLoadHint).not.toContain('worker pool')
   })
+
+  it('describes UID excerpt groups and uses their limit for Chinese filtering and retained summaries', () => {
+    expect(zh.admin.riskControl.tabs.excerptGroups).toBe('摘要长度分组')
+    expect(en.admin.riskControl.tabs.excerptGroups).toBe('Excerpt Groups')
+    for (const messages of [zh, en]) {
+      expect(messages.admin.riskControl.chineseOnlyHint).toContain('UID')
+      expect(messages.admin.riskControl.chineseOnlyHint).not.toContain('500')
+      expect(messages.admin.riskControl.recordNonHitsHint).toContain('UID')
+      expect(messages.admin.riskControl.recordNonHitsHint).not.toContain('500')
+      expect(messages.admin.riskControl.excerptGroups.duplicateUserID).toContain('{uid}')
+      expect(messages.admin.riskControl.excerptGroups.duplicateUserID).toContain('{first}')
+      expect(messages.admin.riskControl.excerptGroups.duplicateUserID).toContain('{second}')
+    }
+    expect(zh.admin.riskControl.excerptGroups.hint).toContain('无需重启')
+    expect(en.admin.riskControl.excerptGroups.hint).toContain('without a restart')
+  })
 })
