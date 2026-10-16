@@ -637,6 +637,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	pendingClientMessages := make([][]byte, 0, 4)
 	pendingClientMessageBytes := int64(0)
 	capacityFailoverSuppressedLogged := false
+	var firstOutputEvent openAIStreamOutputStart
 	clientDisconnected := false
 	officialOpenAIResponses := account != nil && account.Platform == PlatformOpenAI
 	bareErrorPending := false
@@ -852,7 +853,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 			}
 			if wroteDownstream && requestScopedCapacity && !capacityFailoverSuppressedLogged {
-				logOpenAICapacityFailoverSuppressed(ctx, account, "ws_http_bridge", resp.Header.Get("x-request-id"), eventType)
+				logOpenAICapacityFailoverSuppressed(ctx, account, "ws_http_bridge", resp.Header.Get("x-request-id"), eventType, firstOutputEvent)
 				capacityFailoverSuppressedLogged = true
 			}
 			if eventType == "error" && !officialOpenAIResponses {
@@ -902,6 +903,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				// or exposing its staged lifecycle metadata.
 				var messages [][]byte
 				if !isKeepalive {
+					firstOutputEvent.observe(eventType, upstreamMessage, turnStart)
 					messages = pendingClientMessages
 					pendingClientMessages = nil
 					pendingClientMessageBytes = 0

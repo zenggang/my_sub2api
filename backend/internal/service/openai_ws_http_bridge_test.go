@@ -1192,6 +1192,8 @@ func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataAndRelaysKeepaliveBeforeCapaci
 	preamble := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_shed"}}`,
 		"",
+		`data: {"type":"response.queued","response":{"id":"resp_shed","status":"queued"}}`,
+		"",
 		`data: {"type":"response.in_progress","response":{"id":"resp_shed"}}`,
 		"",
 		`data: {"type":"keepalive"}`,
@@ -1262,7 +1264,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *
 		"",
 		`data: {"type":"keepalive"}`,
 		"",
-		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		`data: {"type":"response.output_text.delta","sequence_number":17,"delta":"partial"}`,
 		"",
 		`data: {"type":"keepalive"}`,
 		"",
@@ -1304,6 +1306,8 @@ func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *
 	require.NotContains(t, string(writes[4]), "server_is_overloaded")
 	require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
 	require.True(t, logSink.ContainsFieldValue("path", "ws_http_bridge"))
+	require.True(t, logSink.ContainsFieldValue("first_output_event_type", "response.output_text.delta"))
+	require.True(t, logSink.ContainsFieldValue("first_output_sequence_number", "17"))
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurnKeepaliveWriteFailure(t *testing.T) {

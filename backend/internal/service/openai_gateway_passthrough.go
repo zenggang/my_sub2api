@@ -1090,7 +1090,8 @@ func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
 // Lifecycle metadata and transport heartbeats are not model output.
 func openAIStreamEventIsMetadata(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	case "response.created", "response.in_progress", "keepalive":
+	// 排队只表示上游已接收请求，不能提交本次尝试或解除首输出超时，否则后续降载无法安全切号。
+	case "response.created", "response.queued", "response.in_progress", "keepalive":
 		return true
 	default:
 		return false
@@ -1322,17 +1323,47 @@ func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {
 	return false
 }
 
+// 只保存首次触发输出提交的事件摘要，降载失败时记录一次；不保留可能包含完整输入的 SSE 帧。
+type openAIStreamOutputStart struct {
+	eventType      string
+	sequenceNumber int64
+	elapsedMs      int64
+}
+
+func (o *openAIStreamOutputStart) observe(eventType string, payload []byte, startTime time.Time) {
+	if o.eventType != "" {
+		return
+	}
+	o.eventType = strings.Clone(truncateString(strings.TrimSpace(eventType), 128))
+	if o.eventType == "" {
+		o.eventType = "unknown"
+	}
+	o.sequenceNumber = -1
+	if sequence := gjson.GetBytes(payload, "sequence_number"); sequence.Exists() {
+		o.sequenceNumber = sequence.Int()
+	}
+	o.elapsedMs = time.Since(startTime).Milliseconds()
+}
+
 func logOpenAICapacityFailoverSuppressed(
 	ctx context.Context,
 	account *Account,
 	path string,
 	upstreamRequestID string,
 	eventType string,
+	firstOutput openAIStreamOutputStart,
 ) {
 	fields := []zap.Field{
 		zap.String("path", path),
 		zap.String("event_type", strings.TrimSpace(eventType)),
 		zap.String("upstream_request_id", strings.TrimSpace(upstreamRequestID)),
+	}
+	if firstOutput.eventType != "" {
+		fields = append(fields,
+			zap.String("first_output_event_type", firstOutput.eventType),
+			zap.Int64("first_output_sequence_number", firstOutput.sequenceNumber),
+			zap.Int64("first_output_elapsed_ms", firstOutput.elapsedMs),
+		)
 	}
 	if account != nil {
 		fields = append(fields,
@@ -1898,6 +1929,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
 	clientOutputStarted := false
+	var firstOutputEvent openAIStreamOutputStart
 	codexFailureTerminal := account != nil && account.Platform == PlatformOpenAI
 	failureDelivered := false
 	suppressCurrentEvent := false
@@ -2060,7 +2092,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				(eventType == "error" || eventType == "response.failed") &&
 				openAIStreamClientOutputStarted(c, clientOutputStarted) &&
 				isOpenAIUpstreamCapacityShedEvent(dataBytes) {
-				logOpenAICapacityFailoverSuppressed(ctx, account, "passthrough_sse", upstreamRequestID, eventType)
+				logOpenAICapacityFailoverSuppressed(ctx, account, "passthrough_sse", upstreamRequestID, eventType, firstOutputEvent)
 				capacityFailoverSuppressedLogged = true
 			}
 			cyberHit := false
@@ -2170,6 +2202,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				line = "data: " + string(sanitizedData)
 			}
 			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
+			if lineStartsClientOutput {
+				firstOutputEvent.observe(eventType, dataBytes, startTime)
+			}
 			if lineStartsClientOutput && trimmedData != "[DONE]" && !openAIStreamEventTypeIsTerminal(eventType) {
 				semanticOutputSeen = true
 			}

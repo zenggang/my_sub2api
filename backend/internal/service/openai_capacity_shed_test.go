@@ -324,7 +324,7 @@ func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) 
 			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
 			"",
 			"event: response.output_text.delta",
-			`data: {"type":"response.output_text.delta","delta":"partial"}`,
+			`data: {"type":"response.output_text.delta","sequence_number":17,"delta":"partial"}`,
 			"",
 			"event: error",
 			`data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."},"sequence_number":2}`,
@@ -352,6 +352,8 @@ func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) 
 	require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
 	require.True(t, logSink.ContainsFieldValue("path", "native_sse"))
 	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-shed-after-output"))
+	require.True(t, logSink.ContainsFieldValue("first_output_event_type", "response.output_text.delta"))
+	require.True(t, logSink.ContainsFieldValue("first_output_sequence_number", "17"))
 }
 
 func TestOpenAIStreamProcessingFailureAfterOutputIsRecorded(t *testing.T) {
