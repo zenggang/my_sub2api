@@ -1090,8 +1090,8 @@ func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
 // Lifecycle metadata and transport heartbeats are not model output.
 func openAIStreamEventIsMetadata(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	// 排队只表示上游已接收请求，不能提交本次尝试或解除首输出超时，否则后续降载无法安全切号。
-	case "response.created", "response.queued", "response.in_progress", "keepalive":
+	// 排队与 prompt 审核元数据都不含模型输出，不能提交尝试或解除首输出超时，否则紧随其后的降载无法重试。
+	case "response.created", "response.queued", "response.in_progress", "response.metadata", "keepalive":
 		return true
 	default:
 		return false

@@ -20,6 +20,9 @@ const queuedCapacityPreamble = "event: response.created\ndata: {\"type\":\"respo
 	"event: response.queued\ndata: {\"type\":\"response.queued\",\"sequence_number\":1,\"response\":{\"id\":\"resp_queued\",\"status\":\"queued\"}}\n\n" +
 	"event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"sequence_number\":2,\"response\":{\"id\":\"resp_queued\"}}\n\n"
 
+// 2026-10-16 的真实 hello 探针收到审核元数据；失败请求中该事件也可能先于任何模型输出到达。
+const capacityModerationMetadataEvent = "event: response.metadata\ndata: {\"type\":\"response.metadata\",\"response_id\":\"resp_queued\",\"sequence_number\":2,\"metadata\":{\"openai_chatgpt_moderation_metadata\":{\"generation\":{},\"prompt\":{\"omnimod\":{\"outputs\":[{\"is_blocked\":false}],\"protection_type\":\"omnimod\"}},\"tool_call\":{},\"tool_response\":{}}}}\n\n"
+
 const queuedCapacityFailure = "event: error\ndata: {\"type\":\"error\",\"sequence_number\":3,\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n" +
 	"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":4,\"response\":{\"id\":\"resp_queued\",\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}}\n\n"
 
@@ -40,6 +43,15 @@ func runOpenAIQueuedCapacityStream(svc *OpenAIGatewayService, c *gin.Context, re
 }
 
 func TestOpenAIStreamQueuedBeforeOverloadFailsOver(t *testing.T) {
+	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, queuedCapacityPreamble)
+}
+
+func TestOpenAIStreamMetadataBeforeOverloadFailsOver(t *testing.T) {
+	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, capacityModerationMetadataEvent)
+}
+
+func testOpenAIStreamPreambleBeforeOverloadFailsOver(t *testing.T, preamble string) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	for _, passthrough := range []bool{false, true} {
 		name := "native"
@@ -48,7 +60,7 @@ func TestOpenAIStreamQueuedBeforeOverloadFailsOver(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			for _, eventLines := range []bool{false, true} {
-				stream := queuedCapacityPreamble + queuedCapacityFailure
+				stream := preamble + queuedCapacityFailure
 				if !eventLines {
 					var lines []string
 					for _, line := range strings.Split(stream, "\n") {
@@ -104,7 +116,7 @@ func TestOpenAIStreamQueuedKeepaliveBeforeOverloadFailsOver(t *testing.T) {
 				_, err := runOpenAIQueuedCapacityStream(svc, c, resp, passthrough)
 				finished <- err
 			}()
-			_, err := io.WriteString(writer, queuedCapacityPreamble)
+			_, err := io.WriteString(writer, queuedCapacityPreamble+capacityModerationMetadataEvent)
 			require.NoError(t, err)
 			select {
 			case <-rec.flushEvents:
@@ -136,6 +148,15 @@ func TestOpenAIStreamQueuedKeepaliveBeforeOverloadFailsOver(t *testing.T) {
 }
 
 func TestOpenAINativeQueuedDoesNotDisarmFirstOutputTimeout(t *testing.T) {
+	testOpenAINativePreambleDoesNotDisarmFirstOutputTimeout(t, queuedCapacityPreamble)
+}
+
+func TestOpenAINativeMetadataDoesNotDisarmFirstOutputTimeout(t *testing.T) {
+	testOpenAINativePreambleDoesNotDisarmFirstOutputTimeout(t, capacityModerationMetadataEvent)
+}
+
+func testOpenAINativePreambleDoesNotDisarmFirstOutputTimeout(t *testing.T, preamble string) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	reader, writer := io.Pipe()
 	body := &firstOutputCloseTrackingBody{ReadCloser: reader, closed: make(chan struct{})}
@@ -146,7 +167,7 @@ func TestOpenAINativeQueuedDoesNotDisarmFirstOutputTimeout(t *testing.T) {
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		_, _ = io.WriteString(writer, queuedCapacityPreamble)
+		_, _ = io.WriteString(writer, preamble)
 		select {
 		case <-body.closed:
 		case <-ctx.Done():

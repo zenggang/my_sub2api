@@ -20,6 +20,7 @@ func queuedCapacityHandlerResponse(outputEvent string) *http.Response {
 			"data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_failed_attempt\"}}\n\n" +
 				"data: {\"type\":\"response.queued\",\"sequence_number\":1,\"response\":{\"id\":\"resp_failed_attempt\",\"status\":\"queued\"}}\n\n" +
 				"data: {\"type\":\"response.in_progress\",\"sequence_number\":2,\"response\":{\"id\":\"resp_failed_attempt\"}}\n\n" + outputEvent +
+				"data: {\"type\":\"response.metadata\",\"sequence_number\":2,\"response_id\":\"resp_failed_attempt\",\"metadata\":{\"openai_chatgpt_moderation_metadata\":{\"prompt\":{\"omnimod\":{\"outputs\":[{\"is_blocked\":false}]}}}}}\n\n" +
 				"data: {\"type\":\"error\",\"sequence_number\":3,\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n" +
 				"data: {\"type\":\"response.failed\",\"sequence_number\":4,\"response\":{\"id\":\"resp_failed_attempt\",\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}}\n\n")),
 	}

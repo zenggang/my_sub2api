@@ -24,7 +24,7 @@ python3 ops/fork-release/build.py "$SUB2API_BUILD_ROOT"
 The builder prints `BUILT`, an immutable package directory containing binary,
 manifest, source archive, build log, named test events and SHA256SUMS. It executes
 frozen-lockfile frontend installation/build and unit-tagged Lite/attestation/WS
-tests, plus queued Responses capacity retry/failover and replay-safety tests through
+tests, plus queued/moderation-metadata Responses capacity retry/failover and replay-safety tests through
 the real handler, before the Linux amd64 embedded build. Copy the tarball to a new directory
 under `/data/sub2api-patched/releases`, extract there, and check SHA256SUMS.
 Upload `verify.py`, `fork-remote.sh`, `canary.sh`, and `smoke-gateway.py` to a new versioned tool directory.

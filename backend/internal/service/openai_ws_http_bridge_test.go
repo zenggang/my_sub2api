@@ -1193,6 +1193,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataAndRelaysKeepaliveBeforeCapaci
 		`data: {"type":"response.created","response":{"id":"resp_shed"}}`,
 		"",
 		`data: {"type":"response.queued","response":{"id":"resp_shed","status":"queued"}}`,
+		`data: {"type":"response.metadata","response_id":"resp_shed","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{"omnimod":{"outputs":[{"is_blocked":false}]}}}}}`,
 		"",
 		`data: {"type":"response.in_progress","response":{"id":"resp_shed"}}`,
 		"",
