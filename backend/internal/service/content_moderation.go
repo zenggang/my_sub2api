@@ -165,7 +165,7 @@ type ContentModerationConfig struct {
 	SampleRate           int                          `json:"sample_rate"`
 	AllGroups            bool                         `json:"all_groups"`
 	GroupIDs             []int64                      `json:"group_ids"`
-	ChineseOnly          bool                         `json:"chinese_only"` // 按摘要的前 500 个字符限定范围；旧配置未设置时保持原有范围。
+	ChineseOnly          bool                         `json:"chinese_only"` // 按用户实际摘要长度限定中文检查范围；未匹配摘要分组时使用 500 字符。
 	RecordNonHits        bool                         `json:"record_non_hits"`
 	Thresholds           map[string]float64           `json:"thresholds"`
 	WorkerCount          int                          `json:"worker_count"`
@@ -187,6 +187,8 @@ type ContentModerationConfig struct {
 	// 当次不判定封号，且历史 cyber 行在 CountFlaggedByUserSince 中被排除。
 	// 默认 false（计入，与历史行为一致；旧配置 JSON 无此字段时反序列化为 false）。
 	CyberPolicyExcludeFromBanCount bool `json:"cyber_policy_exclude_from_ban_count"`
+
+	ExcerptGroups []ContentModerationExcerptGroup `json:"excerpt_groups"`
 }
 
 type ContentModerationConfigView struct {
@@ -207,6 +209,7 @@ type ContentModerationConfigView struct {
 	AllGroups                      bool                                    `json:"all_groups"`
 	GroupIDs                       []int64                                 `json:"group_ids"`
 	ChineseOnly                    bool                                    `json:"chinese_only"`
+	ExcerptGroups                  []ContentModerationExcerptGroup         `json:"excerpt_groups"`
 	RecordNonHits                  bool                                    `json:"record_non_hits"`
 	Thresholds                     map[string]float64                      `json:"thresholds"`
 	WorkerCount                    int                                     `json:"worker_count"`
@@ -323,6 +326,8 @@ type UpdateContentModerationConfigInput struct {
 	KeywordBlockingMode            *string                       `json:"keyword_blocking_mode"`
 	ModelFilter                    *ContentModerationModelFilter `json:"model_filter"`
 	CyberPolicyExcludeFromBanCount *bool                         `json:"cyber_policy_exclude_from_ban_count"`
+
+	ExcerptGroups *[]ContentModerationExcerptGroup `json:"excerpt_groups"`
 }
 
 type ContentModerationModelFilter struct {
@@ -332,6 +337,8 @@ type ContentModerationModelFilter struct {
 
 type ContentModerationCheckInput struct {
 	riskControlLogOnly bool // Captured at admission and retained by asynchronous tasks.
+	excerptLimitRunes  int  // 入队前固定中文检查及留档上限，防止热更新重新解释已经接收的请求。
+	excerptGroupName   string
 	RequestID          string
 	UserID             int64
 	UserEmail          string
@@ -385,8 +392,8 @@ func (in ContentModerationInput) ExcerptText() string {
 	return in.Text
 }
 
-func (in ContentModerationInput) HasChineseExcerpt() bool {
-	return strings.ContainsFunc(trimRunes(in.ExcerptText(), maxModerationExcerptRunes), func(r rune) bool {
+func (in ContentModerationInput) HasChineseExcerpt(limitRunes int) bool {
+	return strings.ContainsFunc(trimRunes(in.ExcerptText(), limitRunes), func(r rune) bool {
 		return unicode.Is(unicode.Han, r)
 	})
 }
@@ -571,6 +578,7 @@ type contentModerationRuntimeSnapshot struct {
 	riskControlEnabled bool
 	config             *ContentModerationConfig
 	keywordMatcher     *contentModerationKeywordMatcher
+	excerptRules       map[int64]contentModerationExcerptRule
 	configDigest       [sha256.Size]byte
 	loadedAt           time.Time
 }
@@ -719,6 +727,10 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.ChineseOnly != nil {
 		cfg.ChineseOnly = *input.ChineseOnly
 	}
+	if input.ExcerptGroups != nil {
+		// nil（字段省略或 null）保留旧名单；显式空数组清空所有摘要分组。
+		cfg.ExcerptGroups = cloneContentModerationExcerptGroups(*input.ExcerptGroups)
+	}
 	if input.CyberPolicyExcludeFromBanCount != nil {
 		cfg.CyberPolicyExcludeFromBanCount = *input.CyberPolicyExcludeFromBanCount
 	}
@@ -758,6 +770,11 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 		return nil, fmt.Errorf("save content moderation config: %w", err)
 	}
 	s.replaceRuntimeConfig(cfg, raw)
+	if input.ExcerptGroups != nil {
+		// 只记录新功能的非密钥配置，避免完整审计配置中的 provider 密钥进入日志。
+		groupsJSON, _ := json.Marshal(cfg.ExcerptGroups)
+		slog.Info("content_moderation.excerpt_groups_updated", "excerpt_groups", string(groupsJSON))
+	}
 	// 代理选择可能已变化，丢弃已解析的代理 URL 缓存，下次调用即时生效。
 	s.moderationProxyCache.Store(nil)
 	return s.engineConfigView(cfg), nil
@@ -885,6 +902,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		}
 	}()
 	cfg := runtimeSnapshot.config
+	// UID 来自认证上下文；业务分组、API Key 和请求正文均不能改变摘要长度的匹配身份。
+	excerptRule := runtimeSnapshot.excerptRule(input.UserID)
+	input.excerptLimitRunes, input.excerptGroupName = excerptRule.maxChars, excerptRule.name
 	inGroupScope := cfg.includesGroup(input.GroupID)
 	inModelScope := cfg.includesModel(input.Model)
 	slog.Info("content_moderation.config_loaded",
@@ -908,6 +928,8 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"api_key_count", len(cfg.apiKeys()),
 		"pre_hash_check_enabled", cfg.PreHashCheckEnabled,
 		"chinese_only", cfg.ChineseOnly,
+		"excerpt_group", input.excerptGroupName,
+		"excerpt_limit_runes", input.excerptLimitRunes,
 		"record_non_hits", cfg.RecordNonHits)
 	if !cfg.Enabled {
 		slog.Info("content_moderation.skip_config_disabled",
@@ -956,7 +978,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	// 在关键词、哈希和异步入队前按同一份摘要过滤，避免范围外请求产生审计调用或记录。
 	if cfg.ChineseOnly {
 		content = ExtractContentModerationInput(input.Protocol, input.Body)
-		if !content.HasChineseExcerpt() {
+		if !content.HasChineseExcerpt(input.excerptLimitRunes) {
 			slog.Info("content_moderation.skip_no_chinese_excerpt",
 				"request_id", input.RequestID,
 				"user_id", input.UserID,
@@ -964,7 +986,8 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				"group_id", contentModerationLogGroupID(input.GroupID),
 				"endpoint", input.Endpoint,
 				"protocol", input.Protocol,
-				"excerpt_limit_runes", maxModerationExcerptRunes)
+				"excerpt_group", input.excerptGroupName,
+				"excerpt_limit_runes", input.excerptLimitRunes)
 			return allow, nil
 		}
 	}
@@ -1034,6 +1057,8 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"endpoint", input.Endpoint,
 		"protocol", input.Protocol,
 		"text_runes", len([]rune(content.Text)),
+		"excerpt_group", input.excerptGroupName,
+		"excerpt_limit_runes", input.excerptLimitRunes,
 		"image_count", len(content.Images))
 	hashText := content.Hash()
 	if cfg.Mode == ContentModerationModeLocalRecord {
@@ -1162,6 +1187,8 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			"mode", cfg.Mode,
 			"allow_block", allowBlock,
 			"queue_delay_ms", queueDelay,
+			"excerpt_group", input.excerptGroupName,
+			"excerpt_limit_runes", input.effectiveExcerptLimitRunes(),
 			"latency_ms", latency,
 			"error", err)
 		if queueDelay != nil {
@@ -1200,6 +1227,8 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		"highest_category", highestCategory,
 		"highest_score", highestScore,
 		"latency_ms", latency,
+		"excerpt_group", input.excerptGroupName,
+		"excerpt_limit_runes", input.effectiveExcerptLimitRunes(),
 		"queue_delay_ms", queueDelay)
 	if flagged || cfg.RecordNonHits {
 		log := s.buildLog(input, cfg, action, flagged, highestCategory, highestScore, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, "")
@@ -1604,6 +1633,11 @@ func parseContentModerationConfig(raw string) (*ContentModerationConfig, error) 
 	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不是有效 JSON")
 	}
+	groups, err := normalizeContentModerationExcerptGroups(cfg.ExcerptGroups)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ExcerptGroups = groups
 	cfg.normalize()
 	if !validModerationEngine(cfg.Engine) {
 		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_ENGINE", "内容审计引擎无效")
@@ -1686,6 +1720,7 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 			riskControlEnabled: values[SettingKeyRiskControlEnabled] == "true",
 			config:             current.config,
 			keywordMatcher:     current.keywordMatcher,
+			excerptRules:       current.excerptRules,
 			configDigest:       configDigest,
 			loadedAt:           time.Now(),
 		}
@@ -1703,6 +1738,7 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 		riskControlEnabled: values[SettingKeyRiskControlEnabled] == "true",
 		config:             cfg,
 		keywordMatcher:     newContentModerationKeywordMatcher(cfg.BlockedKeywords),
+		excerptRules:       newContentModerationExcerptRules(cfg.ExcerptGroups),
 		configDigest:       configDigest,
 		loadedAt:           time.Now(),
 	}
@@ -1723,6 +1759,7 @@ func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationCo
 	}
 	config := cfg.effectiveEngine(cfg.Engine)
 	keywordMatcher := newContentModerationKeywordMatcher(cfg.BlockedKeywords)
+	excerptRules := newContentModerationExcerptRules(config.ExcerptGroups)
 	configDigest := sha256.Sum256(raw)
 
 	s.runtimeRefreshMu.Lock()
@@ -1736,6 +1773,7 @@ func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationCo
 		riskControlEnabled: current.riskControlEnabled,
 		config:             config,
 		keywordMatcher:     keywordMatcher,
+		excerptRules:       excerptRules,
 		configDigest:       configDigest,
 		loadedAt:           time.Now(),
 	})
@@ -1763,6 +1801,11 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	if cfg == nil {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不能为空")
 	}
+	groups, err := normalizeContentModerationExcerptGroups(cfg.ExcerptGroups)
+	if err != nil {
+		return err
+	}
+	cfg.ExcerptGroups = groups
 	cfg.normalize()
 	if !validModerationEngine(cfg.Engine) {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_ENGINE", "内容审计引擎无效")
@@ -2002,8 +2045,8 @@ func (s *ContentModerationService) buildLog(input ContentModerationCheckInput, c
 		HighestScore:      highestScore,
 		CategoryScores:    cloneFloatMap(scores),
 		ThresholdSnapshot: cloneFloatMap(cfg.Thresholds),
-		// 审核留档按原文截取，避免文件名、请求标识和链接被脱敏后无法溯源。
-		InputExcerpt:      trimRunes(text, maxModerationExcerptRunes),
+		// 留档与入队前的中文筛选使用同一字符上限；仅截取原文，不改变实际送审正文。
+		InputExcerpt:      trimRunes(text, input.effectiveExcerptLimitRunes()),
 		UpstreamLatencyMS: latency,
 		QueueDelayMS:      queueDelay,
 		Error:             errText,
@@ -2213,6 +2256,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 		SampleRate:           100,
 		AllGroups:            true,
 		GroupIDs:             []int64{},
+		ExcerptGroups:        []ContentModerationExcerptGroup{},
 		RecordNonHits:        false,
 		Thresholds:           ContentModerationDefaultThresholds(),
 		WorkerCount:          defaultContentModerationWorkerCount,
@@ -2248,6 +2292,7 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 	clone.ProxyID = cloneInt64Ptr(cfg.ProxyID)
 	clone.APIKeys = append([]string(nil), cfg.APIKeys...)
 	clone.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
+	clone.ExcerptGroups = cloneContentModerationExcerptGroups(cfg.ExcerptGroups)
 	clone.BlockedKeywords = append([]string(nil), cfg.BlockedKeywords...)
 	clone.Thresholds = cloneFloatMap(cfg.Thresholds)
 	clone.ModelFilter = ContentModerationModelFilter{
@@ -2555,6 +2600,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		AllGroups:                      cfg.AllGroups,
 		GroupIDs:                       append([]int64(nil), cfg.GroupIDs...),
 		ChineseOnly:                    cfg.ChineseOnly,
+		ExcerptGroups:                  cloneContentModerationExcerptGroups(cfg.ExcerptGroups),
 		RecordNonHits:                  cfg.RecordNonHits,
 		Thresholds:                     cloneFloatMap(cfg.Thresholds),
 		WorkerCount:                    cfg.WorkerCount,

@@ -58,6 +58,8 @@ type contentModerationConfigRequest struct {
 	BlockedKeywords                *[]string                             `json:"blocked_keywords"`
 	KeywordBlockingMode            *string                               `json:"keyword_blocking_mode"`
 	ModelFilter                    *service.ContentModerationModelFilter `json:"model_filter"`
+
+	ExcerptGroups *[]service.ContentModerationExcerptGroup `json:"excerpt_groups"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
@@ -108,6 +110,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		AllGroups:                      req.AllGroups,
 		GroupIDs:                       req.GroupIDs,
 		ChineseOnly:                    req.ChineseOnly,
+		ExcerptGroups:                  req.ExcerptGroups,
 		RecordNonHits:                  req.RecordNonHits,
 		Thresholds:                     req.Thresholds,
 		WorkerCount:                    req.WorkerCount,
