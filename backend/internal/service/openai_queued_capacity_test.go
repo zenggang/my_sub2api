@@ -43,14 +43,18 @@ func runOpenAIQueuedCapacityStream(svc *OpenAIGatewayService, c *gin.Context, re
 }
 
 func TestOpenAIStreamQueuedBeforeOverloadFailsOver(t *testing.T) {
-	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, queuedCapacityPreamble)
+	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, queuedCapacityPreamble, false)
 }
 
 func TestOpenAIStreamMetadataBeforeOverloadFailsOver(t *testing.T) {
-	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, capacityModerationMetadataEvent)
+	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, capacityModerationMetadataEvent, false)
 }
 
-func testOpenAIStreamPreambleBeforeOverloadFailsOver(t *testing.T, preamble string) {
+func TestOpenAIStreamQueueHeartbeatBeforeOverloadFailsOver(t *testing.T) {
+	testOpenAIStreamPreambleBeforeOverloadFailsOver(t, queuedCapacityPreamble+capacityModerationMetadataEvent, true)
+}
+
+func testOpenAIStreamPreambleBeforeOverloadFailsOver(t *testing.T, preamble string, queueHeartbeat bool) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	for _, passthrough := range []bool{false, true} {
@@ -74,6 +78,11 @@ func testOpenAIStreamPreambleBeforeOverloadFailsOver(t *testing.T, preamble stri
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				if queueHeartbeat {
+					n, err := c.Writer.Write([]byte(":\n\n"))
+					require.NoError(t, err)
+					c.Set(GatewayStreamHeartbeatBytesKey, n)
+				}
 				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stream))}
 
 				firstTokenMs, err := runOpenAIQueuedCapacityStream(svc, c, resp, passthrough)
@@ -84,8 +93,13 @@ func testOpenAIStreamPreambleBeforeOverloadFailsOver(t *testing.T, preamble stri
 				require.True(t, failoverErr.RetryableOnSameAccount)
 				require.True(t, failoverErr.RequestScopedTransient)
 				require.Nil(t, firstTokenMs, "排队状态不应计为首 token")
-				require.False(t, c.Writer.Written())
-				require.Empty(t, rec.Body.String(), "失败账号的生命周期事件必须保持在本次尝试内")
+				if queueHeartbeat {
+					require.Equal(t, ":\n\n", rec.Body.String(), "只有排队心跳出站，失败尝试的帧仍须丢弃")
+					require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+				} else {
+					require.False(t, c.Writer.Written())
+					require.Empty(t, rec.Body.String(), "失败账号的生命周期事件必须保持在本次尝试内")
+				}
 			}
 		})
 	}

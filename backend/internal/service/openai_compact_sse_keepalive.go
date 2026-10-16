@@ -14,6 +14,9 @@ import (
 // openAICompactSSEKeepaliveKey 存放 body-signal compact 请求的下游 SSE 心跳器。
 const openAICompactSSEKeepaliveKey = "openai_compact_sse_keepalive"
 
+// GatewayStreamHeartbeatBytesKey 记录转发前排队心跳的字节数，供 handler 与 OpenAI 输出判定共用。
+const GatewayStreamHeartbeatBytesKey = "gateway_stream_heartbeat_bytes"
+
 // openAICompactSSEKeepalive 在 compact 上游 unary 等待期间向下游写 SSE 注释行
 // 心跳。上游 /responses/compact 在模型处理期间不发送任何字节（大上下文可长达
 // 数分钟），下游若经过反向代理（Nginx/Cloudflare Tunnel 等），零字节静默会触发
@@ -164,7 +167,7 @@ func StopOpenAICompactSSEKeepaliveCommitted(c *gin.Context) bool {
 	return committed
 }
 
-// OpenAICompactKeepaliveAdjustedWrittenSize 返回排除 compact 心跳注释字节后
+// OpenAICompactKeepaliveAdjustedWrittenSize 返回排除排队、普通流及 compact 心跳字节后
 // 的响应已写字节数；无心跳的请求等价于 c.Writer.Size()。心跳字节不构成语义
 // 响应——handler 以"Forward 前后 Size 是否变化"判定是否已向客户端写出响应
 // （变化则放弃 failover 换号），该判定不得被心跳污染，否则 compact 请求
@@ -177,6 +180,11 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 	streamKeepaliveBytes := 0
 	if value, ok := c.Get(openAIStreamKeepaliveBytesKey); ok {
 		streamKeepaliveBytes, _ = value.(int)
+	}
+	// 用户或账号排队时可能已提交心跳；它们不含模型输出，不能阻断随后上游 503 的重试。
+	gatewayHeartbeatBytes := 0
+	if value, ok := c.Get(GatewayStreamHeartbeatBytesKey); ok {
+		gatewayHeartbeatBytes, _ = value.(int)
 	}
 	size := c.Writer.Size()
 	compactKeepaliveBytes := 0
@@ -191,7 +199,7 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 	if size < 0 {
 		return size
 	}
-	keepaliveBytes := compactKeepaliveBytes + streamKeepaliveBytes
+	keepaliveBytes := compactKeepaliveBytes + streamKeepaliveBytes + gatewayHeartbeatBytes
 	if keepaliveBytes <= 0 {
 		return size
 	}

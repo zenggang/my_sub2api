@@ -85,6 +85,44 @@ func TestOpenAIAdjustedWrittenSizeExcludesResponsesStreamKeepalive(t *testing.T)
 	require.Equal(t, ":\n\ndata: semantic\n\n", rec.Body.String())
 }
 
+func TestOpenAIAdjustedWrittenSizeExcludesQueueAndStreamKeepalives(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		stream  bool
+		compact bool
+	}{
+		{name: "queue only"},
+		{name: "queue and stream", stream: true},
+		{name: "queue and compact", compact: true},
+		{name: "queue and both stream keepalives", stream: true, compact: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newCompactBridgeTestContext(t, false)
+			n, err := c.Writer.Write([]byte(":\n\n"))
+			require.NoError(t, err)
+			c.Set(GatewayStreamHeartbeatBytesKey, n)
+			if tt.stream {
+				n, err = c.Writer.Write([]byte(":\n\n"))
+				require.NoError(t, err)
+				recordOpenAIStreamKeepaliveBytes(c, n)
+			}
+			if tt.compact {
+				keepalive := &openAICompactSSEKeepalive{writer: c.Writer, stop: make(chan struct{})}
+				c.Set(openAICompactSSEKeepaliveKey, keepalive)
+				require.True(t, keepalive.beat())
+			}
+			require.True(t, c.Writer.Written())
+			require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+			require.False(t, openAIStreamClientOutputStarted(c, false), "只有心跳时仍可安全重试")
+
+			_, err = c.Writer.Write([]byte("data: semantic\n\n"))
+			require.NoError(t, err)
+			require.Equal(t, len("data: semantic\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+			require.True(t, openAIStreamClientOutputStarted(c, false), "真实输出后仍必须禁止重放")
+		})
+	}
+}
+
 // 心跳已提交后，2xx 桥接续写事件而不重复提交响应头。
 func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommitAppendsEvents(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, true)

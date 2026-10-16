@@ -16,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const gatewayStreamHeartbeatBytesKey = "gateway_stream_heartbeat_bytes"
+const gatewayStreamHeartbeatBytesKey = service.GatewayStreamHeartbeatBytesKey
 
 func recordGatewayStreamHeartbeat(c *gin.Context, written int) {
 	if c == nil || written <= 0 {
