@@ -163,9 +163,13 @@ func TestUserAccountDispatchPauseBeforeCreateAndDuringExecution(t *testing.T) {
 				require.Equal(t, "user_account_paused", operation.Sessions[0].Reason, "经过真实 Redis Lua 回执保留人工暂停原因")
 				require.Equal(t, "user_account_paused", operation.Sessions[0].RebindResult)
 			}
-			bound, err := cache.GetSessionAccountID(context.Background(), 91, hash)
+			dispatchCache := cache.(service.OpenAIUserDispatchCache)
+			scopes, _, err := dispatchCache.ListOpenAIStickyUserBindings(context.Background(), 42, 1)
 			require.NoError(t, err)
-			require.Equal(t, int64(1), bound, "被暂停的目标不得改写原绑定")
+			require.Len(t, scopes, 1)
+			snapshot, err := dispatchCache.ReadOpenAIStickySnapshot(context.Background(), scopes[0], uuid.NewString())
+			require.NoError(t, err)
+			require.Equal(t, int64(1), snapshot.AccountID, "被暂停的目标不得改写原绑定")
 		})
 	}
 }
