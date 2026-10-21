@@ -61,6 +61,7 @@ var auditExtraAllowedKeys = map[string]struct{}{
 	"operation_id": {}, "preview_id": {}, "owner_hash": {}, "user_id": {},
 	"source_account_id": {}, "target_account_id": {}, "rebound_count": {},
 	"skipped_count": {}, "unresolved_count": {},
+	"account_id": {}, "paused": {}, "changed": {},
 }
 
 // SetAuditExtra adds allowlisted, scalar details to the current audit entry.

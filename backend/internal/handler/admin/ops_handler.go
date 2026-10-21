@@ -16,6 +16,7 @@ import (
 type OpsHandler struct {
 	opsService          *service.OpsService
 	userAccountDispatch openAIUserAccountDispatchService
+	accountUserPauses   *service.AccountUserPauseService
 }
 
 // GetErrorLogByID returns ops error log detail.

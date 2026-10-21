@@ -195,6 +195,9 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/concurrency", h.Admin.Ops.GetConcurrencyStats)
 		ops.GET("/user-concurrency", h.Admin.Ops.GetUserConcurrencyStats)
 		ops.GET("/account-slot-observation", h.Admin.Ops.GetAccountSlotObservation)
+		ops.GET("/account-user-pauses", h.Admin.Ops.ListAccountUserPauses)
+		ops.POST("/account-user-pauses/pause", h.Admin.Ops.PauseAccountUser)
+		ops.POST("/account-user-pauses/resume", h.Admin.Ops.ResumeAccountUser)
 		ops.GET("/account-availability", h.Admin.Ops.GetAccountAvailability)
 		ops.GET("/realtime-traffic", h.Admin.Ops.GetRealtimeTrafficSummary)
 

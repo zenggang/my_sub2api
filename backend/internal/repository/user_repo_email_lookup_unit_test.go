@@ -146,6 +146,7 @@ func TestUserRepositoryGetByEmailReportsNormalizedEmailConflict(t *testing.T) {
 
 	_, err = repo.GetByEmail(ctx, "conflict@example.com")
 	require.Error(t, err)
+	require.ErrorIs(t, err, service.ErrUserEmailAmbiguous)
 	require.ErrorContains(t, err, "normalized email lookup matched multiple users")
 }
 

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -125,6 +126,15 @@ func (h *OpsHandler) GetAccountSlotObservation(c *gin.Context) {
 		return
 	}
 	payload := gin.H{"accounts": accounts}
+	// 进程槽位快照已复制并释放锁后再查持久规则；摘要故障只标记未知，不毁掉线程观测。
+	pauses, pauseErr := h.accountUserPauses.Summary(c.Request.Context(), accounts)
+	if pauseErr != nil {
+		pauses = &service.AccountUserPauseSummary{Available: false}
+		if h.accountUserPauses != nil {
+			slog.Warn("ops.account_user_pause_summary_unavailable", "error", pauseErr)
+		}
+	}
+	payload["pause_summary"] = pauses
 	if collectedAt != nil {
 		payload["timestamp"] = collectedAt.UTC()
 	}
