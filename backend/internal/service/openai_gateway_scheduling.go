@@ -259,7 +259,9 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "", false)
+	return s.selectOpenAIAccountWithPauseAdmission(ctx, groupID, func(attemptCtx context.Context) (*Account, error) {
+		return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(attemptCtx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "", false)
+	})
 }
 
 // SelectAccountForTokenCount selects an account for a non-billable token-count
@@ -275,18 +277,20 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 ) (*Account, error) {
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
-	return s.selectAccountForModelWithExclusions(
-		ctx,
-		groupID,
-		platform,
-		sessionHash,
-		requestedModel,
-		nil,
-		false,
-		0,
-		requiredCapability,
-		false,
-	)
+	return s.selectOpenAIAccountWithPauseAdmission(ctx, groupID, func(attemptCtx context.Context) (*Account, error) {
+		return s.selectAccountForModelWithExclusions(
+			attemptCtx,
+			groupID,
+			platform,
+			sessionHash,
+			requestedModel,
+			nil,
+			false,
+			0,
+			requiredCapability,
+			false,
+		)
+	})
 }
 
 // NormalizeOpenAICompatiblePlatform 保留走 OpenAI 网关的平台（openai、grok 与多协议
@@ -393,6 +397,9 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if account == nil {
 		return "account_nil"
+	}
+	if !openAIAccountPauseReselectionAllows(ctx, account) {
+		return "user_pause_reselection_excluded"
 	}
 	// account_model composite routes publish an alias that only accounts with an
 	// explicit model mapping own. Both scheduler modes (advanced and legacy) must
@@ -907,6 +914,11 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 // 另返回账号是否来自粘性会话命中。
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool, error) {
 	platform = NormalizeOpenAICompatiblePlatform(platform)
+	var pauseErr error
+	ctx, excludedIDs, pauseErr = s.withOpenAIAccountUserPauseExclusions(ctx, groupID, platform, excludedIDs)
+	if pauseErr != nil {
+		return nil, false, pauseErr
+	}
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -1140,6 +1152,11 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, useUpstreamTokenCost bool) (*AccountSelectionResult, error) {
 	platform = NormalizeOpenAICompatiblePlatform(platform)
+	var pauseErr error
+	ctx, excludedIDs, pauseErr = s.withOpenAIAccountUserPauseExclusions(ctx, groupID, platform, excludedIDs)
+	if pauseErr != nil {
+		return nil, pauseErr
+	}
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),

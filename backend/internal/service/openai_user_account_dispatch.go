@@ -89,21 +89,28 @@ func dispatchSessionReason(snap *OpenAIStickySnapshot, uid, aid int64) string {
 	}
 	return ""
 }
-func (s *OpenAIGatewayService) dispatchTargetReason(ctx context.Context, a *Account, bindings []OpenAIStickySnapshot, source int64) string {
+func (s *OpenAIGatewayService) dispatchTargetReason(ctx context.Context, a *Account, bindings []OpenAIStickySnapshot, source, userID int64) (string, error) {
 	if a == nil || a.ID == source {
-		return "same_or_missing_account"
+		return "same_or_missing_account", nil
 	}
 	if a.Platform != PlatformOpenAI || !a.IsSchedulable() {
-		return "not_schedulable"
+		return "not_schedulable", nil
+	}
+	paused, err := s.accountUserPauses.IsPaused(ctx, a.ID, userID)
+	if err != nil {
+		return "", err
+	}
+	if paused {
+		return "user_account_paused", nil
 	}
 	if s.isOpenAIAccountRequestRuntimeBlocked(a, "") || s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, a) {
-		return "runtime_blocked"
+		return "runtime_blocked", nil
 	}
 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(s.withOpenAIQuotaAutoPauseContext(ctx), a); paused {
-		return "quota_auto_pause"
+		return "quota_auto_pause", nil
 	}
 	if !parentHealthyForShadow(a, s.parentAccountLookup(ctx)) {
-		return "shadow_parent_unhealthy"
+		return "shadow_parent_unhealthy", nil
 	}
 	for _, b := range bindings {
 		var gid *int64
@@ -112,13 +119,13 @@ func (s *OpenAIGatewayService) dispatchTargetReason(ctx context.Context, a *Acco
 			gid = &g
 		}
 		if !s.openAIAccountMatchesSchedulingGroup(a, gid) {
-			return "group_mismatch"
+			return "group_mismatch", nil
 		}
 		if s.openAIGroupRequiresPrivacySet(ctx, gid) && !a.IsPrivacySet() {
-			return "privacy_not_set"
+			return "privacy_not_set", nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (s *OpenAIGatewayService) PreviewOpenAIUserAccountDispatch(ctx context.Context, owner string, uid, sourceID int64) (*OpenAIDispatchPreview, error) {
@@ -213,7 +220,10 @@ func (s *OpenAIGatewayService) PreviewOpenAIUserAccountDispatch(ctx context.Cont
 		if a.ID == sourceID {
 			continue
 		}
-		reason := s.dispatchTargetReason(ctx, a, bindings, sourceID)
+		reason, pauseErr := s.dispatchTargetReason(ctx, a, bindings, sourceID, uid)
+		if pauseErr != nil {
+			return nil, dispatchStoreError(pauseErr, "")
+		}
 		item := OpenAIDispatchTarget{AccountID: a.ID, Name: a.Name, Compatible: reason == "" && len(bindings) > 0, Reason: reason, MaxConcurrency: a.Concurrency}
 		if l := loads[a.ID]; l != nil {
 			item.Active = l.CurrentConcurrency
@@ -289,7 +299,11 @@ func (s *OpenAIGatewayService) CreateOpenAIUserAccountDispatch(ctx context.Conte
 			return nil, dispatchError(404, "NO_REBINDABLE_SESSIONS", "没有可改绑会话，请查看跳过原因")
 		}
 		target, e := s.accountRepo.GetByID(ctx, targetID)
-		if e != nil || s.dispatchTargetReason(ctx, target, preview.Bindings, preview.Preview.SourceAccount.ID) != "" {
+		targetReason, pauseErr := s.dispatchTargetReason(ctx, target, preview.Bindings, preview.Preview.SourceAccount.ID, preview.Preview.User.ID)
+		if pauseErr != nil {
+			return nil, dispatchStoreError(pauseErr, "")
+		}
+		if e != nil || targetReason != "" {
 			return nil, dispatchError(422, "TARGET_INELIGIBLE", "目标账号当前不满足整批基础资格")
 		}
 		now := time.Now().UTC()
@@ -316,7 +330,14 @@ func (s *OpenAIGatewayService) CreateOpenAIUserAccountDispatch(ctx context.Conte
 		}
 		record.Bindings[i].Scope = s.dispatchScope(record.Bindings[i].Scope)
 		target, e := s.accountRepo.GetByID(ctx, record.Operation.TargetAccountID)
-		eligible := e == nil && s.dispatchTargetReason(ctx, target, record.Bindings, record.Operation.SourceAccountID) == ""
+		targetReason, pauseErr := s.dispatchTargetReason(ctx, target, record.Bindings, record.Operation.SourceAccountID, record.Operation.UserID)
+		if pauseErr != nil {
+			return nil, dispatchStoreError(pauseErr, record.Operation.OperationID)
+		}
+		eligible := e == nil && targetReason == ""
+		if targetReason == "user_account_paused" {
+			record.Operation.Sessions[i].Reason = targetReason
+		}
 		ttl := s.dispatchBindingTTL()
 		if e = cache.RebindOpenAIDispatchSession(ctx, record, i, ttl, s.openAIStickyLegacyTTL(ttl), uuid.NewString(), eligible); e != nil {
 			slog.Warn("openai.dispatch_result_unknown", "operation_id", record.Operation.OperationID, "session_ref", item.SessionRef, "error", e)

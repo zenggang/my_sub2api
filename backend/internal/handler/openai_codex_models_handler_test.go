@@ -159,6 +159,7 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	group := &service.Group{
 		ID:       groupID,
@@ -228,6 +229,7 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	groupA := &service.Group{
 		ID:       91,
@@ -334,6 +336,7 @@ func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *te
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 
 	recorder := performCodexModelsRequestForGroup(t, handler, &service.Group{
@@ -383,6 +386,7 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	handler := &OpenAIGatewayHandler{gatewayService: gatewayService}
 	group := &service.Group{ID: 45, Platform: service.PlatformOpenAI}
 	first := performCodexModelsRequestForGroup(t, handler, group, "")
@@ -600,6 +604,7 @@ func newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, accountCount
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	return &OpenAIGatewayHandler{gatewayService: gatewayService, maxAccountSwitches: maxSwitches}, upstream, groupID
 }
 
@@ -615,7 +620,7 @@ func performCodexModelsRequestForGroup(t *testing.T, handler *OpenAIGatewayHandl
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.144.0", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.144.0", nil).WithContext(openAIAccountPauseTestContext())
 	if etag != "" {
 		c.Request.Header.Set("If-None-Match", etag)
 	}
@@ -763,6 +768,7 @@ func newPinnedCodexTestHandler(accounts []service.Account, upstream *codexModels
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	return &OpenAIGatewayHandler{gatewayService: gatewayService, maxAccountSwitches: maxSwitches}
 }
 

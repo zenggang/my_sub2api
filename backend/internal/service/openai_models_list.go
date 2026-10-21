@@ -300,7 +300,7 @@ func (s *OpenAIGatewayService) FetchPinnedOpenAIModelsList(ctx context.Context, 
 		return response, err
 	}
 	results, err := s.fetchPinnedOpenAIModels(ctx, group, fetch)
-	if err != nil && ctx.Err() == nil && group != nil && group.CodexModelsManifestConfig.FallbackToScheduler {
+	if err != nil && !IsOpenAIAccountPausePolicyError(err) && ctx.Err() == nil && group != nil && group.CodexModelsManifestConfig.FallbackToScheduler {
 		results, err = s.fetchScheduledOpenAIModels(ctx, group, maxAccountSwitches, fetch)
 	}
 	if err != nil {
@@ -394,6 +394,9 @@ func (s *OpenAIGatewayService) fetchScheduledOpenAIModels(ctx context.Context, g
 		}
 		account, err := s.SelectAccountForModelWithExclusions(ctx, &group.ID, "", "", excluded)
 		if err != nil {
+			if IsOpenAIAccountPausePolicyError(err) {
+				return nil, err
+			}
 			if lastErr != nil {
 				return nil, lastErr
 			}

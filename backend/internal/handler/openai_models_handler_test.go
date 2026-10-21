@@ -18,7 +18,7 @@ func performOrdinaryPinnedModelsRequest(t *testing.T, codex *OpenAIGatewayHandle
 	h := &GatewayHandler{openAIGatewayService: codex.gatewayService, maxAccountSwitches: 3}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+	c.Request = httptest.NewRequest(http.MethodGet, path, nil).WithContext(openAIAccountPauseTestContext())
 	c.Request.Header.Set("If-None-Match", etag)
 	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{GroupID: &group.ID, Group: group})
 	h.Models(c)

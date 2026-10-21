@@ -21,6 +21,7 @@ import (
 // otherwise ChatGPT manifests are proxied verbatim and custom API key manifests
 // receive provider-compatibility normalization plus short-lived caching.
 func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
+	prepareOpenAIHTTPAccountPause(c)
 	if c.Request.Context().Err() != nil {
 		return
 	}
@@ -45,6 +46,9 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 			c.Query("client_version"),
 		)
 		if pinnedErr != nil {
+			if h.handleOpenAIAccountPausePolicyError(c, pinnedErr, false, false) {
+				return
+			}
 			if c.Request.Context().Err() != nil {
 				return
 			}
@@ -101,6 +105,9 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 
 	for {
 		account, err := h.gatewayService.SelectAccountForModelWithExclusions(c.Request.Context(), apiKey.GroupID, "", "", failedAccountIDs)
+		if h.handleOpenAIAccountPausePolicyError(c, err, false, false) {
+			return
+		}
 		if err != nil {
 			if c.Request.Context().Err() != nil {
 				return

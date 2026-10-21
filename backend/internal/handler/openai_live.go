@@ -20,6 +20,7 @@ import (
 )
 
 func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
+	prepareOpenAIHTTPAccountPause(c)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -115,6 +116,9 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 	identity := liveCallIdentity(c, apiKey, subject.UserID, subscription)
 	created, err := h.gatewayService.CreateLiveCall(c.Request.Context(), request, identity, subject.Concurrency)
 	if err != nil {
+		if h.handleOpenAIAccountPausePolicyError(c, err, false, false) {
+			return
+		}
 		h.writeLiveCreateError(c, err)
 		return
 	}

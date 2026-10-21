@@ -168,6 +168,12 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 	if group.Platform != PlatformOpenAI || !cfg.Enabled || len(cfg.AccountIDs) == 0 {
 		return nil, ErrNoPinnedCodexModelsAccounts
 	}
+	var pauseErr error
+	var paused map[int64]struct{}
+	ctx, paused, pauseErr = s.withOpenAIAccountUserPauseExclusions(ctx, &group.ID, PlatformOpenAI, nil)
+	if pauseErr != nil {
+		return nil, pauseErr
+	}
 
 	members, err := s.accountRepo.ListByGroup(ctx, group.ID)
 	if err != nil {
@@ -181,6 +187,9 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 	// 按配置顺序筛选可用账号；已解绑/已删除的 ID 直接跳过。
 	usable := make([]Account, 0, len(cfg.AccountIDs))
 	for _, id := range cfg.AccountIDs {
+		if _, excluded := paused[id]; excluded {
+			continue
+		}
 		member, ok := memberByID[id]
 		if !ok || member.Platform != PlatformOpenAI {
 			continue
@@ -201,6 +210,11 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 		fetchGroup.Add(1)
 		go func() {
 			defer fetchGroup.Done()
+			// 固定来源绕过选号器；每次外呼仍须复核最新暂停规则，避免预筛后并发暂停。
+			if err := s.CheckOpenAIAccountUserPause(ctx, &usable[i]); err != nil {
+				fetchErrs[i] = err
+				return
+			}
 			response, err := fetch(ctx, &usable[i])
 			results[i] = pinnedOpenAIModelsResult{account: &usable[i], response: response}
 			fetchErrs[i] = err
@@ -214,6 +228,12 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 	failedIDs := make([]int64, 0)
 	var lastErr error
 	for i, result := range results {
+		if IsOpenAIAccountPausePolicyError(fetchErrs[i]) {
+			return nil, fetchErrs[i]
+		}
+		if errors.Is(fetchErrs[i], ErrOpenAIAccountUserPaused) {
+			continue
+		}
 		if fetchErrs[i] != nil || result.response == nil {
 			failedIDs = append(failedIDs, usable[i].ID)
 			if fetchErrs[i] != nil {
@@ -225,6 +245,9 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 	}
 	if len(successes) == 0 {
 		if lastErr == nil {
+			if len(failedIDs) == 0 {
+				return nil, ErrNoPinnedCodexModelsAccounts
+			}
 			lastErr = infraerrors.New(http.StatusBadGateway, "OPENAI_MODELS_UPSTREAM_FAILED", "pinned model discovery accounts all failed")
 		}
 		return nil, lastErr

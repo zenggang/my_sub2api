@@ -1781,6 +1781,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	if !openAIAccountPauseReselectionAllows(ctx, account) {
+		return false, "user_pause_reselection_excluded"
+	}
 	if source, ok := CompositeRouteSourceFromContext(ctx); ok && source == CompositeRouteSourceAccount {
 		if publicModel, modelOK := RequestedPublicModelFromContext(ctx); modelOK && !explicitModelMappingClaims(*account, publicModel) {
 			return false, "account_model_not_owned"
@@ -2328,6 +2331,11 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}
+	var pauseErr error
+	ctx, excludedIDs, pauseErr = s.withOpenAIAccountUserPauseExclusions(ctx, groupID, platform, excludedIDs)
+	if pauseErr != nil {
+		return nil, decision, pauseErr
+	}
 	// previous/guardian 可以提前返回，自己的版本快照必须在这些选号分支之前固定。
 	if platform == PlatformOpenAI && sessionHash != "" {
 		if _, err := s.captureStickyBinding(ctx, groupID, sessionHash); err != nil {

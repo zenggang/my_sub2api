@@ -292,7 +292,7 @@ elseif tonumber(redis.call('HGET',m,'owner'))~=op.operation.user_id then reason=
 elseif redis.call('HGET',m,'owner_conflict')=='1' or redis.call('HGET',m,'identity_conflict')=='1' then reason='owner_conflict'
 elseif redis.call('HGET',m,'has_ws')=='1' then reason='protocol_unsupported'
 elseif redis.call('HGET',m,'supported')~='1' then reason='identity_unsupported'
-elseif not q.target_eligible then reason='target_ineligible' end
+elseif not q.target_eligible then reason=q.target_ineligible_reason or 'target_ineligible' end
 if reason then item.rebind_result=reason;item.reason=reason;item.observation='not_observed'
 else
  redis.call('SET',p,q.target,'PX',q.ttl_ms)
@@ -325,6 +325,10 @@ func (c *gatewayCache) RebindOpenAIDispatchSession(ctx context.Context, record *
 	scope.Protocol = "http"
 	// 旧操作的引用由脚本读阶段捕获，不能从请求携带的旧 marker 决定要替代哪条历史。
 	q := map[string]any{"scope": scope, "expected": expected, "index": i + 1, "target": record.Operation.TargetAccountID, "target_eligible": eligible, "enabled": true, "ttl_ms": ttl.Milliseconds(), "legacy_ttl_ms": legacyTTL.Milliseconds(), "new_revision": revision, "rebound_at": time.Now().UTC().Format(time.RFC3339Nano), "execution_deadline_ms": record.Operation.ExecutionDeadline.UnixMilli(), "observation_deadline_ms": record.Operation.ObservationDeadline.UnixMilli()}
+	// 暂停是本地用户路由限制，逐项回执保留具体原因，不伪装成账号故障。
+	if !eligible && record.Operation.Sessions[i].Reason == "user_account_paused" {
+		q["target_ineligible_reason"] = "user_account_paused"
+	}
 	raw, e := json.Marshal(q)
 	if e != nil {
 		return e

@@ -19,6 +19,7 @@ import (
 // /v1/responses/input_tokens requests without routing them through the normal
 // Responses generation and usage-recording pipeline.
 func (h *OpenAIGatewayHandler) ResponsesInputTokens(c *gin.Context) {
+	prepareOpenAIHTTPAccountPause(c)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -105,6 +106,9 @@ func (h *OpenAIGatewayHandler) ResponsesInputTokens(c *gin.Context) {
 		requestPlatform,
 	)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+	if h.handleOpenAIAccountPausePolicyError(c, err, false, false) {
+		return
+	}
 	if err != nil {
 		reqLog.Warn("openai_input_tokens.account_select_failed", zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)))
 		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, routingModel, reqModel)
@@ -174,6 +178,7 @@ func (h *OpenAIGatewayHandler) GrokCountTokens(c *gin.Context) {
 // CountTokens handles Anthropic-compatible POST /v1/messages/count_tokens for OpenAI groups.
 // It validates billing and routes to an OpenAI token-count bridge without recording usage.
 func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
+	prepareOpenAIHTTPAccountPause(c)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
 		h.anthropicErrorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -277,6 +282,9 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		openAICompatibleRequestPlatform(c.Request.Context(), apiKey),
 	)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+	if h.handleOpenAIAccountPausePolicyError(c, err, false, true) {
+		return
+	}
 	if err != nil {
 		requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 		reqLog.Warn("openai_count_tokens.account_select_failed", zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)))

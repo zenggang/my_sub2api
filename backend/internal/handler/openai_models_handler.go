@@ -12,6 +12,7 @@ import (
 )
 
 func (h *GatewayHandler) pinnedOpenAIModels(c *gin.Context, group *service.Group) {
+	prepareOpenAIHTTPAccountPause(c)
 	if c.Request.Context().Err() != nil {
 		return
 	}
@@ -30,6 +31,12 @@ func (h *GatewayHandler) pinnedOpenAIModels(c *gin.Context, group *service.Group
 		return
 	}
 	if err != nil {
+		if service.IsOpenAIAccountPausePolicyError(err) {
+			markOpenAIAccountPausePolicyError(c)
+			requestLogger(c, "handler.openai_account_pause").Warn("openai.account_pause_policy_unavailable")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "api_error", "code": "PAUSE_POLICY_UNAVAILABLE", "message": "Account scheduling policy is temporarily unavailable"}})
+			return
+		}
 		if errors.Is(err, service.ErrNoPinnedCodexModelsAccounts) {
 			writeOpenAIModelsError(c, http.StatusServiceUnavailable, "upstream_error", "No available OpenAI model discovery accounts")
 			return

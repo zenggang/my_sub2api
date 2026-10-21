@@ -148,7 +148,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 	// 防御性装门按文本 D 过滤 Live 账号池且门与计费时刻不同源。
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	var lastErr error
-	for attempt := 0; attempt <= 3; attempt++ {
+	for attempt := 0; attempt <= 3; {
 		selection, _, selectErr := s.SelectAccountWithSchedulerForCapability(
 			ctx,
 			identity.GroupID,
@@ -163,6 +163,9 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			false,
 		)
 		if selectErr != nil {
+			if IsOpenAIAccountPausePolicyError(selectErr) {
+				return nil, selectErr
+			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -195,6 +198,20 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			return nil, ErrLiveConcurrencyFull
 		}
 
+		// 已取得两类槽位后仍需终检；管理暂停不消耗真实上游创建失败预算。
+		if pauseErr := s.CheckOpenAIAccountUserPause(ctx, account); pauseErr != nil {
+			selection.ReleaseFunc()
+			s.releaseLiveLease(account.ID, identity.UserID, identity.APIKeyID, leaseID)
+			if errors.Is(pauseErr, ErrOpenAIAccountUserPaused) {
+				if err := s.BeginOpenAIAccountPauseReselection(ctx, identity.GroupID, account); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, pauseErr
+		}
+		CompleteOpenAIAccountPauseAdmission(ctx)
+		attempt++
 		created, createErr := s.createUpstreamLiveCall(ctx, account, request, attestation)
 		selection.ReleaseFunc()
 		if createErr != nil {

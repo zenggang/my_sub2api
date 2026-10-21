@@ -15,7 +15,7 @@ import (
 func requestModelForTest(h *GatewayHandler, group *service.Group, modelID, etag string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil).WithContext(openAIAccountPauseTestContext())
 	c.Request.Header.Set("If-None-Match", etag)
 	if modelID != "" {
 		c.Params = gin.Params{{Key: "model", Value: modelID}}
