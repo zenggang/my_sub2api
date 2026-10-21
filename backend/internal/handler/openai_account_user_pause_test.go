@@ -242,3 +242,31 @@ func TestAccountUserPausePolicyFailureKeepsLocalAttribution(t *testing.T) {
 	require.Equal(t, "api_error", errType)
 	require.Equal(t, "PAUSE_POLICY_UNAVAILABLE", code)
 }
+
+func TestAccountUserPauseAsyncImageExecutionReadsCurrentRules(t *testing.T) {
+	upstream := &openAIImagesFailoverHTTPUpstream{}
+	h := newOpenAIResponsesFailoverTestHandler(t, upstream)
+	h.maxAccountSwitches = 0
+	rules := &pauseHTTPRules{paused: map[int64]map[int64]bool{42: {}}}
+	h.gatewayService.SetAccountUserPauseService(service.NewAccountUserPauseService(rules, nil))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	body := []byte(`{"model":"gpt-image-1","prompt":"fixture image"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(string(body))).WithContext(requestCtx)
+	c.Request.Header.Set("Content-Type", "application/json")
+	group := int64(7)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 9, UserID: 42, GroupID: &group, User: &service.User{ID: 42, Status: service.StatusActive}, Group: &service.Group{ID: group, Platform: service.PlatformOpenAI, AllowImageGeneration: true}})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 42})
+	taskCtx, recorder, cancelTask := newAsyncImageContext(c, body, time.Second*5)
+	defer cancelTask()
+	// 提交上下文分离后才暂停 A，worker 必须读取执行时规则，不能冻结提交时的名单。
+	rules.paused[42][1] = true
+	cancelRequest()
+	require.NoError(t, taskCtx.Request.Context().Err())
+	h.Images(taskCtx)
+	require.NotEmpty(t, upstream.calls(), recorder.Body.String())
+	for _, id := range upstream.calls() {
+		require.Equal(t, int64(2), id, "异步执行保留认证身份，并避开提交后新增暂停的账号 A")
+	}
+}
