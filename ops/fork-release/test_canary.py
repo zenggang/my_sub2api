@@ -11,7 +11,7 @@ class CanaryContractTests(unittest.TestCase):
         script = (HERE / "canary.sh").read_text()
         models = re.search(r"^for model in (.+); do$", script, re.MULTILINE).group(1).split()
         self.assertEqual(models, [
-            "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-sol",
+            "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-sol",
         ])
         self.assertIn('"$HERE/fork-remote.sh" --check', script)
         self.assertIn('"$HERE/smoke-gateway.py" 18081 "$model" "$key_id"', script)

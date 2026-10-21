@@ -28,11 +28,12 @@ for i in $(seq 1 60); do
   sleep 1
 done
 test "$healthy" = true
+# ChatGPT OAuth 的 GPT-5.5 已于 2026-10-14 19:00 UTC 退休；原生矩阵改用 GPT-6 Luna 执行同样的两轮工具续聊。
 # 原生 Sol 使用 6.1；旧 6-sol 可能返回上游别名，不能削弱模型名严格校验来通过冒烟。
-for model in gpt-5.5 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-6.1-sol; do
+for model in gpt-6-luna gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-6.1-sol; do
   /usr/bin/python "$HERE/smoke-gateway.py" 18081 "$model" "$key_id" | tee "$evidence/$model.jsonl"
 done
 test "$(sha256sum /opt/sub2api/sub2api | awk '{print $1}')" = "$live_sha"
 test "$(sha256sum "$directory/sub2api" | awk '{print $1}')" = "$candidate_sha"
 sha256sum "$directory/sub2api" | awk '{print $1}' > "$directory/SMOKE_VERIFIED.sha256"
-echo 'SMOKE_VERIFIED: five models including GPT-5.5 with Lite, tool invocation plus follow-up; production binary unchanged'
+echo 'SMOKE_VERIFIED: five native models including GPT-6 Luna with Lite, tool invocation plus follow-up; production binary unchanged'
