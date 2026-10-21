@@ -222,7 +222,7 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*service
 		return nil, service.ErrUserNotFound
 	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("normalized email lookup matched multiple users for %q", strings.TrimSpace(email))
+		return nil, service.ErrUserEmailAmbiguous.WithCause(fmt.Errorf("normalized email lookup matched multiple users for %q", strings.TrimSpace(email)))
 	}
 	m := matches[0]
 
