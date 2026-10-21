@@ -51,6 +51,20 @@ func (dispatchAPIUserRepo) GetByID(context.Context, int64) (*service.User, error
 	return &service.User{ID: 42, Email: "user-test"}, nil
 }
 
+type dispatchAPIPauseRepo struct {
+	service.AccountUserPauseRepository
+	checks       int
+	pauseOnCheck int
+}
+
+func (r *dispatchAPIPauseRepo) PausedAccountIDs(context.Context, int64) (map[int64]struct{}, error) {
+	return map[int64]struct{}{}, nil
+}
+func (r *dispatchAPIPauseRepo) IsPaused(_ context.Context, aid, uid int64) (bool, error) {
+	r.checks++
+	return aid == 2 && uid == 42 && r.pauseOnCheck > 0 && r.checks >= r.pauseOnCheck, nil
+}
+
 func newDispatchAPI(t *testing.T) (*gin.Engine, *service.OpenAIGatewayService, service.GatewayCache) {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -67,6 +81,7 @@ func newDispatchAPI(t *testing.T) (*gin.Engine, *service.OpenAIGatewayService, s
 	cache := repository.NewGatewayCache(rdb)
 	concurrency := service.NewConcurrencyService(repository.NewConcurrencyCache(rdb, 30, 120))
 	gateway := service.NewOpenAIGatewayService(accounts, nil, nil, dispatchAPIUserRepo{}, nil, nil, cache, cfg, nil, concurrency, nil, rate, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil)
+	gateway.SetAccountUserPauseService(service.NewAccountUserPauseService(&dispatchAPIPauseRepo{}, nil))
 	h := NewOpsHandlerWithDispatch(nil, gateway)
 	router := gin.New()
 	// Harness 实际调用 Admin handler；只用本地固定身份代替外部 JWT 登录和数据库。
@@ -121,6 +136,38 @@ func dispatchSelect(t *testing.T, gateway *service.OpenAIGatewayService, c *gin.
 	require.NotNil(t, selection)
 	require.True(t, selection.Acquired)
 	return selection
+}
+
+func TestUserAccountDispatchPauseBeforeCreateAndDuringExecution(t *testing.T) {
+	for _, check := range []int{1, 2} {
+		t.Run(fmt.Sprintf("pause_on_check_%d", check), func(t *testing.T) {
+			router, gateway, cache := newDispatchAPI(t)
+			require.Equal(t, http.StatusOK, dispatchAPICall(t, router, "PUT", "/settings", `{"enabled":true}`, nil).Code)
+			c, hash := dispatchRequest(t, gateway, uuid.NewString(), "http")
+			selection := dispatchSelect(t, gateway, c, hash, "")
+			selection.ReleaseFunc()
+			var preview service.OpenAIDispatchPreview
+			dispatchAPIData(t, dispatchAPICall(t, router, "POST", "/preview", `{"user_id":42,"source_account_id":1}`, nil), &preview)
+			require.Equal(t, 1, preview.Counts.Rebindable)
+			gateway.SetAccountUserPauseService(service.NewAccountUserPauseService(&dispatchAPIPauseRepo{pauseOnCheck: check}, nil))
+			body := fmt.Sprintf(`{"preview_id":%q,"target_account_id":2,"idempotency_key":%q}`, preview.PreviewID, uuid.NewString())
+			response := dispatchAPICall(t, router, "POST", "/create", body, nil)
+			if check == 1 {
+				require.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+				require.Contains(t, response.Body.String(), "TARGET_INELIGIBLE")
+			} else {
+				var operation service.OpenAIDispatchOperation
+				dispatchAPIData(t, response, &operation)
+				require.False(t, operation.Accepted)
+				require.Equal(t, 0, operation.Counts.Rebound)
+				require.Equal(t, "user_account_paused", operation.Sessions[0].Reason, "经过真实 Redis Lua 回执保留人工暂停原因")
+				require.Equal(t, "user_account_paused", operation.Sessions[0].RebindResult)
+			}
+			bound, err := cache.GetSessionAccountID(context.Background(), 91, hash)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), bound, "被暂停的目标不得改写原绑定")
+		})
+	}
 }
 
 func TestUserAccountDispatchAPIMainFlowIncludesIdleInFlightAndFallbackIdempotency(t *testing.T) {
