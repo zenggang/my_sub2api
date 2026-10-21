@@ -283,6 +283,17 @@ func TestOpenAIDispatchRealRedisAtomicRecovery(t *testing.T) {
 		counts[record.Operation.Sessions[0].RebindResult]++
 	}
 	require.Equal(t, map[string]int{"rebound": 1, "binding_changed": 1}, counts)
+
+	// 人工暂停否决同样经过原生 Lua：保留具体原因，拒绝改绑后不能改变当前物理绑定。
+	current := readDispatchTest(t, restarted, scope)
+	paused := reserveDispatchTest(t, restarted, current, 4)
+	paused.Operation.Sessions[0].Reason = "user_account_paused"
+	require.NoError(t, restarted.RebindOpenAIDispatchSession(context.Background(), paused, 0, time.Hour, 10*time.Minute, uuid.NewString(), false))
+	stored, err = restarted.GetOpenAIDispatchOperation(context.Background(), paused.Operation.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, "user_account_paused", stored.Operation.Sessions[0].Reason)
+	require.Equal(t, "user_account_paused", stored.Operation.Sessions[0].RebindResult)
+	require.Equal(t, current.AccountID, readDispatchTest(t, restarted, scope).AccountID)
 }
 
 func TestOpenAIDispatchAdmissionRechecksOwnerAfterCapture(t *testing.T) {
