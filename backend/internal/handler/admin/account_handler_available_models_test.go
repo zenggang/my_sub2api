@@ -38,6 +38,39 @@ func setupAvailableModelsRouter(adminSvc service.AdminService) *gin.Engine {
 	return router
 }
 
+func TestAccountHandlerGetAvailableModelsOpenCodeUsesAccountCatalogAndFiltersUnsupportedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mapping map[string]any
+		want    []string
+	}{
+		{name: "synced catalog", want: []string{"glm-5.3", "grok-4.6"}},
+		{name: "mapped request names", mapping: map[string]any{"public-glm": "glm-5.3", "looks-like-text": "gemini-3-flash", "hidden-media": "gpt-image-2"}, want: []string{"public-glm"}},
+		{name: "wildcard expands catalog", mapping: map[string]any{"grok-*": "grok-4.6"}, want: []string{"grok-4.6"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := service.Account{ID: 31, Platform: service.PlatformOpenCodeGo, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{"model_mapping": tc.mapping}}
+			account.SetUpstreamModelMetadataSnapshot(service.UpstreamModelMetadataSnapshot{Models: map[string]service.UpstreamModelMetadata{
+				"glm-5.3": {}, "grok-4.6": {}, "gemini-3-flash": {}, "jev-latest": {}, "gpt-image-2": {},
+			}})
+			svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: account}
+			recorder := httptest.NewRecorder()
+			setupAvailableModelsRouter(svc).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/31/models", nil))
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var envelope struct {
+				Data []struct{ ID string } `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
+			ids := make([]string, 0, len(envelope.Data))
+			for _, model := range envelope.Data {
+				ids = append(ids, model.ID)
+			}
+			require.Equal(t, tc.want, ids)
+		})
+	}
+}
+
 type syncUpstreamHTTPUpstream struct {
 	resp      *http.Response
 	responses []*http.Response

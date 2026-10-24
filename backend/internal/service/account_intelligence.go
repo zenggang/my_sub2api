@@ -34,7 +34,7 @@ type AccountIntelligenceTestResult struct {
 	Error                 string `json:"error"`
 }
 
-// TestAccountIntelligence calls only the selected OpenAI OAuth-like account and never updates its state.
+// TestAccountIntelligence calls only the selected account and never updates its state.
 func (s *AccountTestService) TestAccountIntelligence(ctx context.Context, accountID int64, modelID, prompt, effort string) (result AccountIntelligenceTestResult, err error) {
 	result.AccountID = accountID
 	result.ModelID = modelID
@@ -62,6 +62,27 @@ func (s *AccountTestService) TestAccountIntelligence(ctx context.Context, accoun
 	}
 	if err != nil {
 		return result, infraerrors.InternalServer("INTELLIGENCE_TEST_ACCOUNT_LOAD_FAILED", "Failed to load account")
+	}
+	if account.IsOpenCodeGo() && account.Type == AccountTypeAPIKey {
+		// 智商测试只传用户消息，使用同一个只观测探针完成协议路由，不调用普通连接测试的状态恢复链路。
+		probe, probeErr := s.testOpenCodeAccountText(ctx, account, modelID, prompt, effort, accountIntelligenceTestTimeout, true)
+		result.Success, result.OutputText = probe.Success, probe.OutputText
+		result.UpstreamStatusCode, result.StreamErrorStatusCode = probe.UpstreamStatusCode, probe.StreamErrorStatusCode
+		result.DurationMS, result.Error = probe.DurationMS, probe.Error
+		if probeErr == nil {
+			status, streamStatus := 0, 0
+			if result.UpstreamStatusCode != nil {
+				status = *result.UpstreamStatusCode
+			}
+			if result.StreamErrorStatusCode != nil {
+				streamStatus = *result.StreamErrorStatusCode
+			}
+			slog.Info("account_intelligence_test_complete", "account_id", accountID, "model_id", modelID,
+				"reasoning_effort", effort, "success", result.Success, "upstream_status_code", status, "stream_error_status_code", streamStatus,
+				"output_bytes", len(result.OutputText),
+				"duration_ms", result.DurationMS, "error", result.Error)
+		}
+		return result, probeErr
 	}
 	if !account.IsOpenAIOAuthLike() {
 		return result, infraerrors.BadRequest("UNSUPPORTED_INTELLIGENCE_TEST_ACCOUNT", "OpenAI OAuth text accounts only")

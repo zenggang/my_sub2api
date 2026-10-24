@@ -79,6 +79,14 @@ func (s *AccountTestService) ProbeAccountHealth(ctx context.Context, accountID i
 		result.Error = "Synthetic test account cannot be health-probed"
 		return result, nil
 	}
+	if account.IsOpenCodeGo() && account.Type == AccountTypeAPIKey {
+		// OpenCode 按模型选择原生协议；独立探针不复用会恢复账号或写入限流状态的连接测试。
+		probe, probeErr := s.testOpenCodeAccountText(ctx, account, result.ModelID, "hi", "", accountHealthProbeTimeout, false)
+		result.Success, result.UpstreamStatusCode = probe.Success, probe.UpstreamStatusCode
+		result.StreamErrorStatusCode, result.Error = probe.StreamErrorStatusCode, probe.Error
+		result.FirstTokenMS, result.DurationMS = probe.FirstTokenMS, probe.DurationMS
+		return result, probeErr
+	}
 	if !account.IsOpenAIOAuthLike() {
 		return result, infraerrors.BadRequest("UNSUPPORTED_HEALTH_PROBE_ACCOUNT", "OpenAI OAuth text accounts only")
 	}

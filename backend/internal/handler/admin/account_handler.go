@@ -1322,7 +1322,7 @@ type AccountHealthProbeRequest struct {
 	Mode    string `json:"mode"`
 }
 
-// HealthProbe evaluates one OpenAI text request without recovering or changing account state.
+// HealthProbe evaluates one selected OpenAI or OpenCode text request without recovering or changing account state.
 // POST /api/v1/admin/accounts/:id/health-probe
 func (h *AccountHandler) HealthProbe(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -3019,6 +3019,24 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	// TypeSafe accounts serve only the native System One model.
 	if account.IsTypeSafe() {
 		response.Success(c, []claude.Model{{ID: typesafe.JevLatestModel, Type: "model", DisplayName: typesafe.JevLatestModel}})
+		return
+	}
+
+	if account.IsOpenCodeGo() {
+		// OpenCode 先用共享真实目录并保留账号映射别名；发现失败时回退已同步目录或平台目录，不能回退 Claude。
+		if h.accountTestService != nil {
+			if models, fetchErr := h.accountTestService.FetchOpenAIAccountModels(c.Request.Context(), account); fetchErr == nil {
+				filtered := make([]openai.Model, 0, len(models))
+				for _, model := range models {
+					if service.IsOpenCodeAccountTestTextModel(account.GetMappedModel(model.ID)) {
+						filtered = append(filtered, model)
+					}
+				}
+				response.Success(c, filtered)
+				return
+			}
+		}
+		response.Success(c, service.OpenCodeAccountTestModels(account))
 		return
 	}
 
