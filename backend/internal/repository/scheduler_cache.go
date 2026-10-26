@@ -1317,6 +1317,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		// 走网关报 no available accounts"。
 		"openai_passthrough",
 		"openai_oauth_passthrough",
+		// 逻辑账号的路由开关随快照保留，避免轻量调度快照丢失账号级出站策略。
+		"openai_account_routing_us_cr_enabled",
 		"codex_fingerprint_mode",
 		"codex_fingerprint_seed",
 		"codex_5h_used_percent",

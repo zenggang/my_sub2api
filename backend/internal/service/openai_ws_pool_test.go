@@ -809,6 +809,54 @@ func activeCodexFingerprintPoolAccountForTest(id int64) *Account {
 	}
 }
 
+func TestOpenAIWSConnPool_AccountRoutingOverrideIsHardCompatibility(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+	pool := newOpenAIWSConnPool(cfg)
+	defer pool.Close()
+	dialer := &openAIWSCountingDialer{}
+	pool.setClientDialerForTest(dialer)
+	account := &Account{ID: 129, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	plainReq := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	plainLease, err := pool.Acquire(context.Background(), plainReq)
+	require.NoError(t, err)
+	plainID := plainLease.ConnID()
+	// 开关改变不取消已租用的旧连接；新请求必须另建匹配握手的连接。
+	routedReq := plainReq
+	routedReq.Headers = http.Header{}
+	account.Extra = map[string]any{openAIAccountRoutingUSCREnabledKey: true}
+	applyOpenAIAccountRoutingOverride(routedReq.Headers, account)
+	routedReq.PreferredConnID = plainID
+	routedReq.ForcePreferredConn = true
+	_, err = pool.Acquire(context.Background(), routedReq)
+	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
+	routedReq.ForcePreferredConn = false
+	routedLease, err := pool.Acquire(context.Background(), routedReq)
+	require.NoError(t, err)
+	require.False(t, routedLease.Reused())
+	require.NotEqual(t, plainID, routedLease.ConnID())
+	require.NoError(t, plainLease.WriteJSON(map[string]any{"type": "response.create"}, 0), "旧请求仍可完成既有生命周期")
+	plainLease.Release()
+	routedID := routedLease.ConnID()
+	routedLease.Release()
+
+	account.Extra[openAIAccountRoutingUSCREnabledKey] = false
+	plainReq.PreferredConnID = routedID
+	plainReq.ForcePreferredConn = true
+	_, err = pool.Acquire(context.Background(), plainReq)
+	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
+	plainReq.ForcePreferredConn = false
+	offLease, err := pool.Acquire(context.Background(), plainReq)
+	require.NoError(t, err)
+	require.True(t, offLease.Reused())
+	require.Equal(t, plainID, offLease.ConnID(), "关闭后普通/sticky选择同样不能借用 us_cr 连接")
+	offLease.Release()
+	require.False(t, sameOpenAIWSPrewarmTarget(plainReq, routedReq), "预热目标必须区分路由开关")
+	require.Equal(t, 2, dialer.DialCount())
+}
+
 func stableOpenAIWSIdentityHeadersForTest() http.Header {
 	headers := make(http.Header)
 	headers.Set("X-Codex-Beta-Features", "remote_compaction_v2,responses_websockets_v2")

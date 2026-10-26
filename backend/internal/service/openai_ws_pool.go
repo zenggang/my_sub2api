@@ -148,13 +148,14 @@ func applyOpenAIWSAttestationToDialHeaders(headers http.Header, attestation open
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
-	betaFeatures        string
-	codexInstallationID string
-	sessionIDHyphen     string
-	sessionIDUnderscore string
-	threadID            string
-	clientRequestID     string
-	codexWindowID       string
+	betaFeatures           string
+	accountRoutingOverride string
+	codexInstallationID    string
+	sessionIDHyphen        string
+	sessionIDUnderscore    string
+	threadID               string
+	clientRequestID        string
+	codexWindowID          string
 }
 
 type openAIWSConnLease struct {
@@ -2486,6 +2487,8 @@ func normalizeOpenAIWSBetaFeatures(headers http.Header) string {
 func normalizeOpenAIWSHandshakeCompatibility(account *Account, headers http.Header) openAIWSHandshakeCompatibilityKey {
 	key := openAIWSHandshakeCompatibilityKey{
 		betaFeatures: normalizeOpenAIWSBetaFeatures(headers),
+		// 路由覆盖在握手时确定，属于硬兼容条件；关闭指纹收敛也不能复用旧路由连接。
+		accountRoutingOverride: normalizeOpenAIWSStableIdentityHeader(headers, openAIAccountRoutingOverrideHeader),
 	}
 	mode := activeCodexFingerprintMode(account)
 	if mode == codexFingerprintOff {

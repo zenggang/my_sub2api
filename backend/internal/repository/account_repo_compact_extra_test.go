@@ -23,3 +23,11 @@ func TestShouldEnqueueSchedulerOutboxForExtraUpdates_OpenAIResponsesCapabilityKe
 		t.Fatalf("expected responses capability updates to enqueue scheduler outbox")
 	}
 }
+
+func TestShouldEnqueueSchedulerOutboxForExtraUpdates_AccountRoutingOverrideIsRelevant(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		if !shouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{"openai_account_routing_us_cr_enabled": enabled}) {
+			t.Fatalf("routing override update %v must refresh scheduler snapshots", enabled)
+		}
+	}
+}

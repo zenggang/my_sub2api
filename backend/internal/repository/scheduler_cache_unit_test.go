@@ -70,6 +70,25 @@ func TestSchedulerCacheSetAccountClearsUnencodablePayload(t *testing.T) {
 	require.Nil(t, cached)
 }
 
+func TestSchedulerCacheAccountRoutingOverrideSurvivesUpdatesAndMetadataProjection(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	account := service.Account{ID: 115, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}
+	for _, enabled := range []bool{true, false} {
+		account.Extra = map[string]any{"openai_account_routing_us_cr_enabled": enabled}
+		require.NoError(t, cache.SetAccount(ctx, &account))
+		full, err := cache.GetAccount(ctx, account.ID)
+		require.NoError(t, err)
+		require.NotNil(t, full)
+		require.Equal(t, enabled, full.IsOpenAIAccountRoutingUSCREnabled())
+		payload, err := cache.rdb.Get(ctx, schedulerAccountMetaKey(strconv.FormatInt(account.ID, 10))).Bytes()
+		require.NoError(t, err)
+		var projected service.Account
+		require.NoError(t, json.Unmarshal(payload, &projected))
+		require.Equal(t, enabled, projected.IsOpenAIAccountRoutingUSCREnabled())
+	}
+}
+
 func TestSchedulerCacheUpdateLastUsedClearsUnencodablePayload(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

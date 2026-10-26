@@ -26,6 +26,8 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 	account *Account,
 	useTLSFallback bool,
 ) (*http.Response, error) {
+	// 测试使用同一逻辑账号的路由开关，在插件或 TLS 传输之前收口，涵盖连接与 compact 探针。
+	applyOpenAIAccountRoutingOverride(request.Header, account)
 	if s.pluginManager != nil {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
 		if handled {

@@ -103,6 +103,7 @@ func logOpenAIRoutingDiagnostics(
 		zap.String("final_model", strings.TrimSpace(model)),
 		zap.String("final_service_tier", normalizedOpenAIServiceTierValue(serviceTier)),
 		zap.Bool("routing_hint_generated", hintGenerated),
+		zap.Bool("account_routing_us_cr_enabled", account.IsOpenAIAccountRoutingUSCREnabled()),
 		zap.String("ws_affinity_decision", strings.TrimSpace(wsAffinityDecision)),
 	)
 }
