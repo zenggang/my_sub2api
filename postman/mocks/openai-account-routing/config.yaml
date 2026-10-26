@@ -1,0 +1,10 @@
+version: 1
+name: openai-account-routing
+slug: openai-account-routing
+protocol: http
+port: 4906
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

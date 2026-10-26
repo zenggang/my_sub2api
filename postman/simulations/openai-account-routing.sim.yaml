@@ -1,0 +1,6 @@
+simulation: openai-account-routing
+routing: path
+mocks:
+  - name: Codex upstream
+    routeKey: codex
+    path: postman/mocks/openai-account-routing/config.yaml

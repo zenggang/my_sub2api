@@ -5916,7 +5916,7 @@ const handleSubmit = async () => {
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
-        // extra 按字段合并，关闭也必须显式写 false，才能覆盖账号先前保存的 true。
+        // 显式保存 false，使全量编辑和 extra 合并入口均可关闭既有配置。
         newExtra.openai_account_routing_us_cr_enabled = openAIAccountRoutingUsCrEnabled.value
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
         newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
