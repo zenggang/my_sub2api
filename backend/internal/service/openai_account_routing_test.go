@@ -4,11 +4,39 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAIAccountRoutingOverrideReplacesEveryHeaderCasing(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		headers := http.Header{
+			openAIAccountRoutingOverrideHeader:  {"raw-lowercase"},
+			"X-Openai-Account-Routing-Override": {"canonical", "duplicate"},
+			"X-OPENAI-ACCOUNT-ROUTING-OVERRIDE": {"raw-uppercase"},
+			"X-Unrelated":                       {"keep"},
+		}
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{openAIAccountRoutingUSCREnabledKey: enabled}}
+		applyOpenAIAccountRoutingOverride(headers, account)
+		matchedKeys := 0
+		for key, values := range headers {
+			if strings.EqualFold(key, openAIAccountRoutingOverrideHeader) {
+				matchedKeys++
+				require.Equal(t, http.CanonicalHeaderKey(openAIAccountRoutingOverrideHeader), key)
+				require.Equal(t, []string{"us_cr"}, values)
+			}
+		}
+		if enabled {
+			require.Equal(t, 1, matchedKeys)
+		} else {
+			require.Zero(t, matchedKeys)
+		}
+		require.Equal(t, "keep", headers.Get("X-Unrelated"))
+	}
+}
 
 func TestOpenAIAccountRoutingOverrideBuilders(t *testing.T) {
 	gin.SetMode(gin.TestMode)

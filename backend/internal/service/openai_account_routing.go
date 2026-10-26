@@ -21,7 +21,7 @@ func applyOpenAIAccountRoutingOverride(headers http.Header, account *Account) {
 		return
 	}
 	// 路由策略属于所选逻辑账号，不能从凭据母账号继承，也不能由客户端头覆盖关闭状态。
-	headers.Del(openAIAccountRoutingOverrideHeader)
+	deleteOpenAIHeaderEqualFold(headers, openAIAccountRoutingOverrideHeader)
 	if account.IsOpenAIAccountRoutingUSCREnabled() {
 		headers.Set(openAIAccountRoutingOverrideHeader, "us_cr")
 	}
