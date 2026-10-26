@@ -732,6 +732,8 @@ export default {
         codexImageToolBadgeEnabled: 'Hosted bridge on',
         codexImageToolBadgeDisabled: 'No hosted injection',
         codexImageToolBadgeBlock: 'Client image tools stripped',
+        accountRoutingUsCr: 'us_cr routing',
+        accountRoutingUsCrDesc: 'When enabled, Codex requests from this account use us_cr routing. Disabled by default.',
         compactMode: 'Compact mode',
         compactModeDesc:
           'Controls how this account participates in /responses/compact routing. Auto follows probe results, Force On always allows, Force Off always excludes.',

@@ -1851,6 +1851,108 @@ describe('EditAccountModal', () => {
   })
 })
 
+describe('EditAccountModal OpenAI us_cr routing', () => {
+  const toggleSelector = '[data-testid="edit-openai-account-routing-us-cr-toggle"]'
+
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it.each([undefined, false, 'true', 1, null])('defaults to off for stored value %s and explicitly saves false', async (value) => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.extra = value === undefined ? {} : { openai_account_routing_us_cr_enabled: value }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('false')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_account_routing_us_cr_enabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each(['oauth', 'setup-token'])('saves an enabled %s account and preserves other extra fields', async (type) => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.type = type
+    account.extra = { openai_compact_mode: 'force_on', custom_metadata: { team: 'testing' } }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get(toggleSelector).trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
+      openai_account_routing_us_cr_enabled: true,
+      openai_compact_mode: 'force_on',
+      custom_metadata: { team: 'testing' }
+    })
+    wrapper.unmount()
+  })
+
+  it.each(['oauth', 'setup-token'])('loads an enabled %s account and explicitly saves false when disabled', async (type) => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.type = type
+    account.extra = { openai_account_routing_us_cr_enabled: true, custom_metadata: 'keep' }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('true')
+    await wrapper.get(toggleSelector).trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
+      openai_account_routing_us_cr_enabled: false,
+      custom_metadata: 'keep'
+    })
+    wrapper.unmount()
+  })
+
+  it('reloads account-local state when switching to a shadow account and reopening the modal', async () => {
+    const parent = buildOpenAIOAuthParentAccount()
+    parent.extra = { openai_account_routing_us_cr_enabled: true }
+    const shadow = buildOpenAISparkShadowAccount()
+    shadow.parent_account_id = parent.id
+    const wrapper = mountModal(parent)
+
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('true')
+    await wrapper.setProps({ account: shadow })
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('false')
+
+    await wrapper.get(toggleSelector).trigger('click')
+    updateAccountMock.mockResolvedValue(shadow)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[0]).toBe(shadow.id)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_account_routing_us_cr_enabled).toBe(true)
+
+    await wrapper.setProps({ account: parent })
+    await wrapper.get(toggleSelector).trigger('click')
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('false')
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect(wrapper.get(toggleSelector).attributes('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('only shows the switch for OpenAI OAuth and setup-token accounts', () => {
+    for (const account of [buildOpenAIOAuthParentAccount(), buildOpenAISetupTokenAccount(), buildOpenAISparkShadowAccount()]) {
+      const wrapper = mountModal(account)
+      expect(wrapper.find(toggleSelector).exists()).toBe(true)
+      wrapper.unmount()
+    }
+
+    for (const account of [buildAccount(), buildGrokOAuthAccount(), buildAntigravityAccount(), buildVertexAccount()]) {
+      const wrapper = mountModal(account)
+      expect(wrapper.find(toggleSelector).exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+})
+
 describe('EditAccountModal OpenAI 自动使用重置卡', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true

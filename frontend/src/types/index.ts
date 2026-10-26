@@ -1247,6 +1247,7 @@ export interface Account {
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
+    openai_account_routing_us_cr_enabled?: boolean
     codex_reset_credit_snapshot?: {
       available_count?: number
       credits?: { expires_at?: string }[]

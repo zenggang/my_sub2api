@@ -2553,6 +2553,23 @@
         </div>
       </div>
 
+      <div
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token')"
+        class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div>
+          <label class="input-label mb-0">{{ t('admin.accounts.openai.accountRoutingUsCr') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.openai.accountRoutingUsCrDesc') }}
+          </p>
+        </div>
+        <Toggle
+          v-model="openAIAccountRoutingUsCrEnabled"
+          data-testid="edit-openai-account-routing-us-cr-toggle"
+          :aria-label="t('admin.accounts.openai.accountRoutingUsCr')"
+        />
+      </div>
+
       <div>
         <div class="flex items-center justify-between">
           <div>
@@ -3851,6 +3868,7 @@ const openAILongContextBillingEnabled = ref(false)
 // 存于 credentials.plan_type;'' 表示清空/自动识别
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
+const openAIAccountRoutingUsCrEnabled = ref(false)
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
@@ -4349,6 +4367,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAILongContextBillingEnabled.value = false
   editPlanType.value = ''
   openAICompactMode.value = 'auto'
+  openAIAccountRoutingUsCrEnabled.value = false
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openAICompactModelMappings.value = []
@@ -4404,6 +4423,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       defaultMode: OPENAI_WS_MODE_OFF
     })
     if (newAccount.type === 'oauth' || newAccount.type === 'setup-token') {
+      // 路由选择属于当前逻辑账号，影子账号也只读取自己的 extra，不继承母账号开关。
+      openAIAccountRoutingUsCrEnabled.value = extra?.openai_account_routing_us_cr_enabled === true
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAppServerEnabled.value =
         extra?.codex_cli_only_allow_app_server === true
@@ -5895,6 +5916,8 @@ const handleSubmit = async () => {
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
+        // extra 按字段合并，关闭也必须显式写 false，才能覆盖账号先前保存的 true。
+        newExtra.openai_account_routing_us_cr_enabled = openAIAccountRoutingUsCrEnabled.value
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
         newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
       } else if (props.account.type === 'apikey') {
