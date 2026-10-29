@@ -374,14 +374,27 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 		return s.failState(ctx, accountID, state, infraerrors.Reason(selectErr), selectErr)
 	}
 	if candidate == nil {
+		if openAIAutoResetHasPending(state) {
+			return s.failState(ctx, accountID, state, "RESET_RESULT_UNCONFIRMED", nil)
+		}
 		// 已确认未消费结果在后台扫描后仍保留，不能降级显示成一次成功重置。
 		if state.Status == OpenAIAutoResetStatusChecking {
 			state.Status = OpenAIAutoResetStatusAvailable
+			state.ErrorCode = ""
 			if state.AvailableCount <= 0 {
 				state.Status = OpenAIAutoResetStatusNoCredit
+				if assessment.resetReached {
+					state.ErrorCode = "NO_RESET_CREDIT"
+				}
 			}
 			if len(state.Attempts) > 0 && state.Attempts[len(state.Attempts)-1].Outcome == openAIAutoResetAttemptNotConsumed {
-				state.Status = OpenAIAutoResetStatusNotConsumed
+				code := strings.ToLower(strings.TrimSpace(state.Attempts[len(state.Attempts)-1].Code))
+				if code == "nothing_to_reset" {
+					state.Status = OpenAIAutoResetStatusNotConsumed
+					state.ErrorCode = "NOTHING_TO_RESET"
+				} else if code == "no_credit" && state.AvailableCount <= 0 {
+					state.ErrorCode = "NO_RESET_CREDIT"
+				}
 			}
 		}
 		return s.persistState(ctx, accountID, state)

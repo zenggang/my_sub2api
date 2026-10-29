@@ -235,6 +235,42 @@ func TestOpenAIQuotaAutoResetService_NoCreditPreservesUnavailableState(t *testin
 	require.Zero(t, recoverer.calls.Load())
 }
 
+func TestOpenAIQuotaAutoResetService_NoCreditRemainsUnavailableAfterRefresh(t *testing.T) {
+	for _, usagePath := range []bool{false, true} {
+		name := "expiry"
+		if usagePath {
+			name = "usage threshold"
+		}
+		t.Run(name, func(t *testing.T) {
+			svc, repo, quota, _ := newExpiryResetFixture(t)
+			if usagePath {
+				repo.account.Extra[OpenAIAutoResetCreditExpiryEnabledExtraKey] = false
+				repo.account.Extra[OpenAIAutoResetCreditEnabledExtraKey] = true
+				repo.account.Extra["codex_5h_used_percent"] = 100.0
+				quota.usage.RateLimit.PrimaryWindow.UsedPercent = 100
+			}
+			quota.result = &OpenAIQuotaResetResult{Code: "no_credit"}
+			require.NoError(t, svc.evaluateAccount(context.Background(), 601))
+			require.Equal(t, OpenAIAutoResetStatusNoCredit, repo.stateForTest().Status)
+			state := repo.stateForTest()
+			stale := time.Now().Add(-11 * time.Minute).UTC().Format(time.RFC3339)
+			state.CreditsCheckedAt, state.CheckedAt = stale, stale
+			repo.setExtraForTest(OpenAIAutoResetCreditStateExtraKey, state)
+			repo.setExtraForTest("codex_usage_updated_at", stale)
+			quota.usage.RateLimitResetCredits.AvailableCount = 0
+			quota.usage.RateLimitResetCredits.Credits = nil
+			quota.usage.autoResetCandidates = nil
+			require.NoError(t, svc.evaluateAccount(context.Background(), 601))
+			refreshed := repo.stateForTest()
+			require.Equal(t, OpenAIAutoResetStatusNoCredit, refreshed.Status)
+			require.Zero(t, refreshed.AvailableCount)
+			require.Equal(t, "NO_RESET_CREDIT", refreshed.ErrorCode)
+			require.Equal(t, int32(2), quota.queryCalls.Load())
+			require.Equal(t, int32(1), quota.resetCalls.Load())
+		})
+	}
+}
+
 func TestOpenAIQuotaAutoResetService_ThresholdDropClearsDynamicTrigger(t *testing.T) {
 	svc, repo, quota, _ := newExpiryResetFixture(t)
 	repo.account.Extra[OpenAIAutoResetCreditExpiryEnabledExtraKey] = false
