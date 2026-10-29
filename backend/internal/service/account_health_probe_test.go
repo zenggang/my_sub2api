@@ -281,7 +281,7 @@ func TestAccountHealthProbeTimeoutIsFailureWithoutAccountWrites(t *testing.T) {
 	requireHealthProbeNoAccountWrites(t, repo)
 }
 
-func TestAccountHealthProbeRejectsNonTextAndNonOAuthAccountsBeforeUpstream(t *testing.T) {
+func TestAccountHealthProbeRejectsNonTextAndUnsupportedAccountsBeforeUpstream(t *testing.T) {
 	account := healthProbeTestAccount(91, AccountTypeOAuth)
 	account.Credentials["model_mapping"] = map[string]any{"draw": "gpt-image-2"}
 	repo := &openAIAccountTestRepo{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}}
@@ -291,7 +291,7 @@ func TestAccountHealthProbeRejectsNonTextAndNonOAuthAccountsBeforeUpstream(t *te
 		_, err := svc.ProbeAccountHealth(context.Background(), account.ID, model)
 		require.Error(t, err, model)
 	}
-	account.Type = AccountTypeAPIKey
+	account.Type = AccountTypeUpstream
 	_, err := svc.ProbeAccountHealth(context.Background(), account.ID, "gpt-5.4")
 	require.Error(t, err)
 	require.Empty(t, upstream.requests)

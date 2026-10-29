@@ -63,9 +63,9 @@ func (s *AccountTestService) TestAccountIntelligence(ctx context.Context, accoun
 	if err != nil {
 		return result, infraerrors.InternalServer("INTELLIGENCE_TEST_ACCOUNT_LOAD_FAILED", "Failed to load account")
 	}
-	if account.IsOpenCodeGo() && account.Type == AccountTypeAPIKey {
+	if account.IsOpenAIApiKey() || (account.IsOpenCodeGo() && account.Type == AccountTypeAPIKey) {
 		// 智商测试只传用户消息，使用同一个只观测探针完成协议路由，不调用普通连接测试的状态恢复链路。
-		probe, probeErr := s.testOpenCodeAccountText(ctx, account, modelID, prompt, effort, accountIntelligenceTestTimeout, true)
+		probe, probeErr := s.testAPIKeyAccountText(ctx, account, modelID, prompt, effort, accountIntelligenceTestTimeout, true)
 		result.Success, result.OutputText = probe.Success, probe.OutputText
 		result.UpstreamStatusCode, result.StreamErrorStatusCode = probe.UpstreamStatusCode, probe.StreamErrorStatusCode
 		result.DurationMS, result.Error = probe.DurationMS, probe.Error
@@ -85,7 +85,7 @@ func (s *AccountTestService) TestAccountIntelligence(ctx context.Context, accoun
 		return result, probeErr
 	}
 	if !account.IsOpenAIOAuthLike() {
-		return result, infraerrors.BadRequest("UNSUPPORTED_INTELLIGENCE_TEST_ACCOUNT", "OpenAI OAuth text accounts only")
+		return result, infraerrors.BadRequest("UNSUPPORTED_INTELLIGENCE_TEST_ACCOUNT", "OpenAI OAuth/setup-token/API Key or OpenCode API Key text accounts only")
 	}
 	if !account.IsModelSupported(modelID) {
 		return result, infraerrors.BadRequest("UNSUPPORTED_INTELLIGENCE_TEST_MODEL", "Model is not available on this account")

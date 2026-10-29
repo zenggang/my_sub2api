@@ -27,24 +27,36 @@ func (r *openCodeProbeSimulationRepo) GetByID(_ context.Context, id int64) (*ser
 
 // 仅账户读取由本地夹具提供；探针与正式 HTTP 传输真实运行，任何意外账户写入会命中未实现接口并失败。
 func TestOpenCodeProbePostmanSimulation(t *testing.T) {
-	base := strings.TrimRight(os.Getenv("TEST_OPENCODE_PROBE_SIMULATION_URL"), "/")
+	runAPIKeyProbePostmanSimulation(t, service.PlatformOpenCodeGo, "synthetic-opencode-key", "TEST_OPENCODE_PROBE_SIMULATION_URL", []string{service.APIProtocolChatCompletions, service.APIProtocolResponses, service.APIProtocolAnthropic})
+}
+
+func TestOpenAIAPIKeyProbePostmanSimulation(t *testing.T) {
+	runAPIKeyProbePostmanSimulation(t, service.PlatformOpenAI, "synthetic-openai-key", "TEST_OPENAI_APIKEY_PROBE_SIMULATION_URL", []string{service.APIProtocolChatCompletions, service.APIProtocolResponses})
+}
+
+func runAPIKeyProbePostmanSimulation(t *testing.T, platform, key, env string, protocols []string) {
+	t.Helper()
+	base := strings.TrimRight(os.Getenv(env), "/")
 	require.NotEmpty(t, base, "start the opencode-account-tests Postman simulation first")
 	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true, AllowPrivateHosts: true}}}
 	upstream := NewHTTPUpstream(cfg)
-	for _, protocol := range []string{service.APIProtocolChatCompletions, service.APIProtocolResponses, service.APIProtocolAnthropic} {
+	for _, protocol := range protocols {
 		t.Run(protocol, func(t *testing.T) {
 			for _, scenario := range []string{"ok", "empty", "truncated", "http503", "stream503"} {
 				t.Run(scenario, func(t *testing.T) {
 					model := "fixture-" + scenario
 					account := &service.Account{
-						ID: 31, Name: "OpenCode simulation", Platform: service.PlatformOpenCodeGo, Type: service.AccountTypeAPIKey,
+						ID: 31, Name: "API Key simulation", Platform: platform, Type: service.AccountTypeAPIKey,
 						Status: service.StatusDisabled, Schedulable: false, Concurrency: 1,
 						Credentials: map[string]any{
-							"api_key": "synthetic-opencode-key", "account_mode": "go", "api_protocol": protocol,
+							"api_key": key, "account_mode": "go", "api_protocol": protocol,
 							"base_url":      base + "/v1",
 							"api_base_urls": map[string]any{protocol: base + "/v1"},
 							"model_mapping": map[string]any{"public-model": model},
 						},
+					}
+					if platform == service.PlatformOpenAI {
+						account.Extra = map[string]any{"openai_responses_supported": protocol == service.APIProtocolResponses}
 					}
 					repo := &openCodeProbeSimulationRepo{account: account}
 					svc := service.NewAccountTestService(repo, nil, nil, nil, nil, upstream, cfg, nil)
@@ -77,7 +89,7 @@ func TestOpenCodeProbePostmanSimulation(t *testing.T) {
 						require.NotNil(t, intelligence.StreamErrorStatusCode)
 						require.Equal(t, 503, *intelligence.StreamErrorStatusCode)
 					}
-					require.NotContains(t, health.Error+intelligence.Error, "synthetic-opencode-key")
+					require.NotContains(t, health.Error+intelligence.Error, key)
 					require.Equal(t, service.StatusDisabled, account.Status)
 					require.False(t, account.Schedulable)
 				})

@@ -15,10 +15,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/tidwall/gjson"
 )
 
-type openCodeAccountTextProbe struct {
+type apiKeyAccountTextProbe struct {
 	AccountHealthProbeResult
 	OutputText string
 }
@@ -64,9 +65,14 @@ func IsOpenCodeAccountTestTextModel(model string) bool {
 	return isAccountHealthProbeTextModel(model) && !IsOpenCodeUnsupportedModel(model)
 }
 
-// testOpenCodeAccountText shares only request construction and stream reading; account recovery, quota reconciliation and scheduling are deliberately absent.
-func (s *AccountTestService) testOpenCodeAccountText(ctx context.Context, account *Account, modelID, prompt, effort string, timeout time.Duration, capture bool) (result openCodeAccountTextProbe, err error) {
-	if !account.IsModelSupported(modelID) || !IsOpenCodeAccountTestTextModel(account.GetMappedModel(modelID)) {
+// testAPIKeyAccountText shares only request construction and stream reading; account recovery, quota reconciliation and scheduling are deliberately absent.
+func (s *AccountTestService) testAPIKeyAccountText(ctx context.Context, account *Account, modelID, prompt, effort string, timeout time.Duration, capture bool) (result apiKeyAccountTextProbe, err error) {
+	// 自动透传忽略旧模型映射；普通账号仍以映射目标判断文本资格，和监控模型目录保持一致。
+	upstreamModel := modelID
+	if !account.IsOpenAIPassthroughEnabled() {
+		upstreamModel = account.GetMappedModel(modelID)
+	}
+	if !account.IsModelSupported(modelID) || !isAccountHealthProbeTextModel(upstreamModel) || (account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(upstreamModel)) {
 		return result, infraerrors.BadRequest("UNSUPPORTED_ACCOUNT_TEST_MODEL", "A supported text model is required")
 	}
 	if account.IsSyntheticUITest() {
@@ -82,14 +88,19 @@ func (s *AccountTestService) testOpenCodeAccountText(ctx context.Context, accoun
 		result.Error = "API key is missing"
 		return result, nil
 	}
-	upstreamModel := account.GetMappedModel(modelID)
 	protocol := account.resolveModelRoutedProtocol(upstreamModel)
-	if s.openaiGatewayService != nil {
+	if account.IsOpenAIApiKey() {
+		// 沿用原生 API Key 连接测试的能力判断；探测不支持 Responses 时走 Chat，避免误发 ChatGPT OAuth 请求。
+		protocol = APIProtocolResponses
+		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+			protocol = APIProtocolChatCompletions
+		}
+	} else if s.openaiGatewayService != nil {
 		protocol = s.openaiGatewayService.resolveUpstreamProtocolFor(ctx, account, "", upstreamModel)
 	}
 	testCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, requestErr := s.buildOpenCodeAccountTextRequest(testCtx, account, upstreamModel, prompt, effort, protocol, authToken)
+	req, requestErr := s.buildAPIKeyAccountTextRequest(testCtx, account, upstreamModel, prompt, effort, protocol, authToken)
 	if requestErr != nil {
 		result.Error = "Failed to build upstream test request"
 		return result, nil
@@ -142,12 +153,17 @@ func (s *AccountTestService) testOpenCodeAccountText(ctx context.Context, accoun
 	return result, nil
 }
 
-func (s *AccountTestService) buildOpenCodeAccountTextRequest(ctx context.Context, account *Account, model, prompt, effort, protocol, authToken string) (*http.Request, error) {
+func (s *AccountTestService) buildAPIKeyAccountTextRequest(ctx context.Context, account *Account, model, prompt, effort, protocol, authToken string) (*http.Request, error) {
 	input, err := json.Marshal([]map[string]any{{"role": "user", "content": []map[string]string{{"type": "input_text", "text": prompt}}}})
 	if err != nil {
 		return nil, err
 	}
 	request := &apicompat.ResponsesRequest{Model: model, Input: input, Stream: true}
+	if account.IsOpenAIApiKey() {
+		// 账号测试只观察返回内容，不在支持 Responses 的上游保存测试会话。
+		store := false
+		request.Store = &store
+	}
 	if effort != "" {
 		request.Reasoning = &apicompat.ResponsesReasoning{Effort: effort}
 	}
@@ -194,6 +210,9 @@ func (s *AccountTestService) buildOpenCodeAccountTextRequest(ctx context.Context
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if account.IsOpenAIApiKey() && protocol == APIProtocolResponses {
+		applyOpenAICodexProbeHeaders(req.Header)
+	}
 	if protocol == APIProtocolAnthropic {
 		req.Header.Set("anthropic-version", "2023-06-01")
 		setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, baseURL)
