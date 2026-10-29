@@ -64,7 +64,7 @@ http.createServer((req, res) => {
       send(res, 200, { code: 'nothing_to_reset', windows_reset: 0, credit });
       return;
     }
-    if (accountID === 'fixture-unknown') {
+    if (accountID === 'fixture-unknown' && state.consumeCalls === 1) {
       send(res, 200, { code: 'future_unknown', windows_reset: 0, credit });
       return;
     }

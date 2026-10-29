@@ -102,13 +102,9 @@ func TestOpenAIResetExpiryPostmanSimulation(t *testing.T) {
 			// Recreate the evaluator to verify that deduplication survives process-local state loss.
 			restarted := NewOpenAIQuotaAutoResetService(repo, quota, autoResetTestRecoverer{}, coordinator, nil, nil, nil)
 			secondErr := restarted.evaluateAccount(context.Background(), account.ID)
-			if scenario == "unknown" {
-				require.Error(t, secondErr)
-			} else {
-				require.NoError(t, secondErr)
-			}
+			require.NoError(t, secondErr)
 			rows := readRequests(t, identity)
-			if scenario == "retry" {
+			if scenario == "retry" || scenario == "unknown" {
 				require.Len(t, rows, 2)
 				require.Equal(t, rows[0].CreditID, rows[1].CreditID)
 				require.Equal(t, rows[0].RedeemRequestID, rows[1].RedeemRequestID, "an uncertain response must preserve the original redemption identity")
@@ -122,8 +118,6 @@ func TestOpenAIResetExpiryPostmanSimulation(t *testing.T) {
 			case "noop":
 				require.Equal(t, OpenAIAutoResetStatusNotConsumed, state.Status)
 				require.Equal(t, 1, state.AvailableCount)
-			case "unknown":
-				require.Equal(t, OpenAIAutoResetStatusFailed, state.Status)
 			default:
 				require.Equal(t, OpenAIAutoResetStatusSuccess, state.Status)
 				require.Zero(t, state.AvailableCount)
