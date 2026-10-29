@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import OpenAIQuotaResetCell from '../OpenAIQuotaResetCell.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { Account } from '@/types'
-import { refreshOpenAIQuota, resetOpenAIQuota, type OpenAIQuotaRefreshResult } from '@/api/admin/accounts'
+import { refreshOpenAIQuota, resetOpenAIQuota, type OpenAIQuotaRefreshResult, type OpenAIQuotaResetResult } from '@/api/admin/accounts'
 
 vi.mock('@/api/admin/accounts', () => ({
   refreshOpenAIQuota: vi.fn(),
@@ -360,13 +360,24 @@ describe('OpenAIQuotaResetCell — 外审 F6:影子禁用重置', () => {
     wrapper.unmount()
   })
 
-  it('上游返回无需重置时保留次数并明确反馈未消费，不能显示重置成功', async () => {
+  it.each<{
+    warningCode?: OpenAIQuotaResetResult['warning_code']
+    warningKey?: string
+    cacheRefreshed: boolean
+    accountStateRecovered: boolean
+  }>([
+    { cacheRefreshed: true, accountStateRecovered: true },
+    { warningCode: 'reset_credit_cache_refresh_failed', warningKey: 'resetNotConsumedCacheRefreshFailed', cacheRefreshed: false, accountStateRecovered: true },
+    { warningCode: 'account_state_recovery_failed', warningKey: 'resetNotConsumedAccountRecoveryFailed', cacheRefreshed: false, accountStateRecovered: false },
+    { warningCode: 'account_state_refresh_failed', warningKey: 'resetNotConsumedAccountRefreshFailed', cacheRefreshed: true, accountStateRecovered: true }
+  ])('无需重置时同时展示未消费和后处理警告 $warningCode', async ({ warningCode, warningKey, cacheRefreshed, accountStateRecovered }) => {
     vi.mocked(resetOpenAIQuota).mockResolvedValue({
       code: 'nothing_to_reset',
       credit: { status: 'available', expires_at: FUTURE_EXPIRY_EARLY },
       windows_reset: 0,
-      cache_refreshed: true,
-      account_state_recovered: true,
+      cache_refreshed: cacheRefreshed,
+      account_state_recovered: accountStateRecovered,
+      warning_code: warningCode,
       quota: {
         rate_limit_reset_credits: {
           available_count: 2,
@@ -388,8 +399,17 @@ describe('OpenAIQuotaResetCell — 外审 F6:影子禁用重置', () => {
 
     expect(resetOpenAIQuota).toHaveBeenCalledTimes(1)
     expect(refreshOpenAIQuota).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.count2')
+    if (cacheRefreshed) {
+      expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.count2')
+    } else {
+      expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.count2')
+      expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
+    }
     expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.resetNotConsumed')
+    if (warningKey) expect(wrapper.text()).toContain(`admin.accounts.openaiQuotaReset.${warningKey}`)
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.resetCacheRefreshFailed')
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.resetAccountRecoveryFailed')
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.resetAccountRefreshFailed')
     expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.resetSuccess')
     wrapper.unmount()
   })

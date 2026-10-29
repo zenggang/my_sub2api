@@ -527,6 +527,14 @@ const confirmReset = async () => {
     // 上游 HTTP 成功不代表实际兑换；nothing_to_reset 保留卡，不能展示用卡成功。
     if (result.code.trim().toLowerCase() === 'nothing_to_reset') {
       resetWarning.value = t('admin.accounts.openaiQuotaReset.resetNotConsumed')
+      // 未消费与后处理失败可同时发生；仍须提示失败，且不能套用“窗口已重置”的文案。
+      const warningKeys: Record<string, string> = {
+        reset_credit_cache_refresh_failed: 'admin.accounts.openaiQuotaReset.resetNotConsumedCacheRefreshFailed',
+        account_state_recovery_failed: 'admin.accounts.openaiQuotaReset.resetNotConsumedAccountRecoveryFailed',
+        account_state_refresh_failed: 'admin.accounts.openaiQuotaReset.resetNotConsumedAccountRefreshFailed'
+      }
+      const warningKey = result.warning_code ? warningKeys[result.warning_code] : undefined
+      if (warningKey) resetWarning.value += ` ${t(warningKey)}`
     } else if (result.warning_code === 'reset_credit_cache_refresh_failed') {
       resetWarning.value = t('admin.accounts.openaiQuotaReset.resetCacheRefreshFailed')
     } else if (result.warning_code === 'account_state_recovery_failed') {
