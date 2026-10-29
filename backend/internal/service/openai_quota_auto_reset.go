@@ -455,6 +455,8 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 		Scope: "openai_auto_reset_credit", ActorScope: fmt.Sprintf("account:%d", accountID),
 		Method: http.MethodPost, Route: "/system/openai/reset-credit/auto",
 		IdempotencyKey: stableKey, Payload: payload, TTL: ttl, RequireKey: true,
+		// 原卡与兑换 ID 都固定，进程在请求后退出时可回收过期租约并按原身份确认结果。
+		ReclaimExpiredProcessing: true,
 	}, func(execCtx context.Context) (any, error) {
 		resetResult, resetErr := s.quota.ResetCreditTargeted(execCtx, accountID, candidate.ID, redeemRequestID)
 		if resetErr != nil {
