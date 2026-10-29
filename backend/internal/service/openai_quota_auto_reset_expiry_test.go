@@ -385,6 +385,27 @@ func TestOpenAIQuotaAutoResetService_RestartResolvesStoredSuccessWithoutOriginal
 	require.Equal(t, openAIAutoResetAttemptConsumed, repo.stateForTest().Attempts[0].Outcome)
 }
 
+func TestOpenAIQuotaAutoResetService_RestartFinishesConsumedBeforePostProcess(t *testing.T) {
+	svc, repo, quota, recoverer := newExpiryResetFixture(t)
+	require.NoError(t, svc.evaluateAccount(context.Background(), 601))
+	state := repo.stateForTest()
+	// 模拟已消费事实落盘，但在首次后处理前退出；尚无 warning/error 可用于推断。
+	state.PostProcessPending = true
+	state.ErrorCode = ""
+	state.Attempts[0].CreditExpiresAt = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	repo.setExtraForTest(OpenAIAutoResetCreditStateExtraKey, state)
+	quota.usage.autoResetCandidates = nil
+	quota.usage.RateLimitResetCredits.AvailableCount = 0
+	quota.resetCalls.Store(0)
+	recoverer.calls.Store(0)
+	restarted := NewOpenAIQuotaAutoResetService(repo, quota, recoverer, svc.idempotency, nil, nil, nil)
+	require.NoError(t, restarted.evaluateAccount(context.Background(), 601))
+	require.Zero(t, quota.resetCalls.Load(), "只回放原DB消费结果，不再次请求上游消费")
+	require.Equal(t, int32(1), recoverer.calls.Load())
+	require.False(t, repo.stateForTest().PostProcessPending)
+	require.Equal(t, openAIAutoResetAttemptConsumed, repo.stateForTest().Attempts[0].Outcome)
+}
+
 type expiryScanTestRepo struct {
 	*autoResetTestAccountRepo
 	statusFilter string

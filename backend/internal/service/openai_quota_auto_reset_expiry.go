@@ -93,6 +93,9 @@ func openAIAutoResetFindAttempt(state *OpenAIAutoResetCreditState, creditHash st
 
 func openAIAutoResetHasPending(state *OpenAIAutoResetCreditState) bool {
 	if state != nil {
+		if state.PostProcessPending {
+			return true
+		}
 		if state.ErrorCode == OpenAIQuotaResetWarningCacheRefreshFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRecoveryFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRefreshFailed {
 			return true
 		}
@@ -110,7 +113,8 @@ func pruneOpenAIAutoResetAttempts(state *OpenAIAutoResetCreditState, now time.Ti
 	for _, attempt := range state.Attempts {
 		expiry, err := time.Parse(time.RFC3339, attempt.CreditExpiresAt)
 		// 未决结果和旧版无到期信息的身份不能靠时间清理；已知结果过期后无需永久积累。
-		if attempt.Outcome != openAIAutoResetAttemptPending && err == nil && !expiry.After(now) {
+		postProcessPending := state.PostProcessPending && attempt.CreditHash == state.AttemptCreditHash
+		if attempt.Outcome != openAIAutoResetAttemptPending && !postProcessPending && err == nil && !expiry.After(now) {
 			continue
 		}
 		kept = append(kept, attempt)

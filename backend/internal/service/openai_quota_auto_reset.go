@@ -63,6 +63,7 @@ type OpenAIAutoResetCreditState struct {
 	NextCreditExpiresAt string                         `json:"next_credit_expires_at,omitempty"`
 	AttemptKeyVersion   string                         `json:"attempt_key_version,omitempty"`
 	Attempts            []OpenAIAutoResetCreditAttempt `json:"attempts,omitempty"`
+	PostProcessPending  bool                           `json:"post_process_pending,omitempty"`
 }
 
 type openAIAutoResetQuota interface {
@@ -511,6 +512,8 @@ func (s *OpenAIQuotaAutoResetService) finishAttempt(ctx context.Context, account
 	}
 	// 先持久化已消费事实，再做可失败的本地恢复，防止刷新失败被当成可以另用一张卡。
 	state.Status = OpenAIAutoResetStatusSuccess
+	// 成功消费与本地恢复之间可能进程退出，必须先把待恢复事实一起落盘。
+	state.PostProcessPending = true
 	if err := s.persistState(ctx, accountID, state); err != nil {
 		return err
 	}
@@ -530,6 +533,7 @@ func (s *OpenAIQuotaAutoResetService) finishAttempt(ctx context.Context, account
 		openAIAutoResetSetNextExpiry(state, post.Quota.autoResetCandidates, time.Now())
 	}
 	state.ErrorCode = ""
+	state.PostProcessPending = false
 	if err := s.persistState(ctx, accountID, state); err != nil {
 		return err
 	}
@@ -546,7 +550,7 @@ func (s *OpenAIQuotaAutoResetService) resolveStoredAttempt(ctx context.Context, 
 	}
 	for _, attempt := range state.Attempts {
 		recoveryPending := attempt.Outcome == openAIAutoResetAttemptConsumed && attempt.CreditHash == state.AttemptCreditHash &&
-			(state.ErrorCode == OpenAIQuotaResetWarningCacheRefreshFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRecoveryFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRefreshFailed)
+			(state.PostProcessPending || state.ErrorCode == OpenAIQuotaResetWarningCacheRefreshFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRecoveryFailed || state.ErrorCode == OpenAIQuotaResetWarningAccountRefreshFailed)
 		if attempt.Outcome != openAIAutoResetAttemptPending && !recoveryPending {
 			continue
 		}
