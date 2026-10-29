@@ -321,6 +321,64 @@ func TestOpenAIQuotaAutoResetService_UnknownDoesNotSwitchCardsOrIdentity(t *test
 	require.Equal(t, openAIAutoResetAttemptPending, repo.stateForTest().Attempts[0].Outcome)
 }
 
+func TestOpenAIQuotaAutoResetService_UnknownResponseRetriesSameIdentityWithOneOwner(t *testing.T) {
+	svc, repo, quota, recoverer := newExpiryResetFixture(t)
+	quota.usage.RateLimitResetCredits.AvailableCount = 2
+	quota.usage.autoResetCandidates = append(quota.usage.autoResetCandidates,
+		openAIAutoResetCreditCandidate{ID: "other-expiring-card", ExpiresAt: time.Now().Add(40 * time.Minute).UTC().Format(time.RFC3339)})
+	quota.result = &OpenAIQuotaResetResult{Code: "not_available", WindowsReset: 0}
+	require.Error(t, svc.evaluateAccount(context.Background(), 601))
+	state := repo.stateForTest()
+	require.Equal(t, openAIAutoResetAttemptPending, state.Attempts[0].Outcome)
+	stableKey := openAIAutoResetAttemptKey(601, state.Attempts[0])
+	record, err := svc.idempotency.repo.GetByScopeAndKeyHash(context.Background(), "openai_auto_reset_credit", HashIdempotencyKey(stableKey))
+	require.NoError(t, err)
+	require.Equal(t, IdempotencyStatusFailedRetryable, record.Status, "未知200不能保存成永远回放的成功")
+	require.Zero(t, recoverer.calls.Load())
+
+	quota.result = &OpenAIQuotaResetResult{Code: "ok", WindowsReset: 1}
+	quota.resetEntered = make(chan struct{})
+	quota.releaseReset = make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- svc.evaluateAccount(context.Background(), 601) }()
+	<-quota.resetEntered
+	other := NewOpenAIQuotaAutoResetService(repo, quota, recoverer, svc.idempotency, nil, nil, nil)
+	require.NoError(t, other.evaluateAccount(context.Background(), 601))
+	close(quota.releaseReset)
+	require.NoError(t, <-done)
+	require.Equal(t, int32(2), quota.resetCalls.Load(), "并发确认只允许一个实例按原参数重试")
+	require.Equal(t, quota.resetArgs[0], quota.resetArgs[1])
+	require.Equal(t, "expiry-card", quota.resetArgs[1][0])
+	require.Equal(t, int32(1), recoverer.calls.Load())
+	require.Equal(t, openAIAutoResetAttemptConsumed, repo.stateForTest().Attempts[0].Outcome)
+}
+
+func TestOpenAIQuotaAutoResetService_LegacySucceededUnknownIsNotBlindlyRewritten(t *testing.T) {
+	svc, repo, quota, _ := newExpiryResetFixture(t)
+	attempt := OpenAIAutoResetCreditAttempt{CreditHash: shortOpenAIAutoResetHash("expiry-card"), Outcome: openAIAutoResetAttemptPending,
+		CreditExpiresAt: quota.usage.autoResetCandidates[0].ExpiresAt, TriggerReason: openAIAutoResetTriggerExpiry}
+	stableKey := openAIAutoResetAttemptKey(601, attempt)
+	// 模拟旧候选已把未知200保存为成功；没有响应CAS时不能据此改写整个记录。
+	_, err := svc.idempotency.Execute(context.Background(), IdempotencyExecuteOptions{
+		Scope: "openai_auto_reset_credit", ActorScope: "account:601", Method: "POST", Route: "/system/openai/reset-credit/auto", IdempotencyKey: stableKey,
+		Payload: map[string]any{"account_id": int64(601), "credit_hash": attempt.CreditHash, "generation": ""},
+	}, func(context.Context) (any, error) {
+		return openAIAutoResetConsumeResult{Code: "not_available", WindowsReset: 0}, nil
+	})
+	require.NoError(t, err)
+	repo.setExtraForTest(OpenAIAutoResetCreditStateExtraKey, &OpenAIAutoResetCreditState{
+		Status: OpenAIAutoResetStatusFailed, AttemptCreditHash: attempt.CreditHash, AttemptKeyVersion: openAIAutoResetCardKeyVersion,
+		Attempts: []OpenAIAutoResetCreditAttempt{attempt},
+	})
+	require.Error(t, svc.evaluateAccount(context.Background(), 601))
+	require.Zero(t, quota.resetCalls.Load())
+	require.Equal(t, "RESET_RESULT_UNCONFIRMED", repo.stateForTest().ErrorCode)
+	record, err := svc.idempotency.repo.GetByScopeAndKeyHash(context.Background(), "openai_auto_reset_credit", HashIdempotencyKey(stableKey))
+	require.NoError(t, err)
+	require.Equal(t, IdempotencyStatusSucceeded, record.Status)
+	require.Equal(t, openAIAutoResetAttemptPending, repo.stateForTest().Attempts[0].Outcome)
+}
+
 func TestOpenAIQuotaAutoResetService_RefreshFailureNeverConsumesAgain(t *testing.T) {
 	svc, _, quota, recoverer := newExpiryResetFixture(t)
 	quota.postErr = errors.New("cache write failed")

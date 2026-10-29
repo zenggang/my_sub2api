@@ -479,8 +479,14 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 		if resetResult == nil {
 			return nil, infraerrors.InternalServer("OPENAI_AUTO_RESET_EMPTY_RESULT", "automatic reset returned an empty result")
 		}
+		consumeResult := openAIAutoResetConsumeResult{Code: resetResult.Code, WindowsReset: resetResult.WindowsReset}
+		attempt.Code = resetResult.Code
+		if openAIAutoResetConsumeOutcome(consumeResult) == openAIAutoResetAttemptPending {
+			// 未确认的 HTTP 200 也应保持可重试；保存为成功会永久回放旧未知结果，无法原 ID 再确认。
+			return nil, infraerrors.Conflict("RESET_RESULT_UNCONFIRMED", "automatic reset result is not confirmed")
+		}
 		// 幂等表只保存脱敏结果，卡 ID 不进入响应体列或运行态。
-		return openAIAutoResetConsumeResult{Code: resetResult.Code, WindowsReset: resetResult.WindowsReset}, nil
+		return consumeResult, nil
 	})
 	if err != nil {
 		reason := infraerrors.Reason(err)
