@@ -360,6 +360,40 @@ describe('OpenAIQuotaResetCell — 外审 F6:影子禁用重置', () => {
     wrapper.unmount()
   })
 
+  it('上游返回无需重置时保留次数并明确反馈未消费，不能显示重置成功', async () => {
+    vi.mocked(resetOpenAIQuota).mockResolvedValue({
+      code: 'nothing_to_reset',
+      credit: { status: 'available', expires_at: FUTURE_EXPIRY_EARLY },
+      windows_reset: 0,
+      cache_refreshed: true,
+      account_state_recovered: true,
+      quota: {
+        rate_limit_reset_credits: {
+          available_count: 2,
+          credits: [{ expires_at: FUTURE_EXPIRY_EARLY }, { expires_at: FUTURE_EXPIRY_LATE }]
+        },
+        fetched_at: 1770000000
+      }
+    })
+    const account = makeAccount({ extra: {
+      codex_reset_credit_snapshot: {
+        available_count: 2,
+        credits: [{ expires_at: FUTURE_EXPIRY_EARLY }, { expires_at: FUTURE_EXPIRY_LATE }]
+      }
+    } })
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account } })
+    await resetButton(wrapper).trigger('click')
+    wrapper.findComponent(ConfirmDialog).vm.$emit('confirm')
+    await flushPromises()
+
+    expect(resetOpenAIQuota).toHaveBeenCalledTimes(1)
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.count2')
+    expect(wrapper.text()).toContain('admin.accounts.openaiQuotaReset.resetNotConsumed')
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.resetSuccess')
+    wrapper.unmount()
+  })
+
   // 缓存回读失败不影响「账号状态已恢复」这一主目标:恢复后的账号行必须照常回传,
   // 否则列表会继续显示已经不存在的限流状态。
   it('缓存刷新失败时仍回传恢复后的账号并把次数标为未知', async () => {
@@ -438,6 +472,7 @@ describe('OpenAIQuotaResetCell 自动用卡运行态', () => {
     ['available', 'available'],
     ['resetting', 'resetting'],
     ['success', 'success'],
+    ['not_consumed', 'notConsumed'],
     ['no_credit', 'noCredit'],
     ['failed', 'failed'],
   ] as const)('展示 %s 状态且不需要暴露卡标识', (status, labelKey) => {
@@ -470,6 +505,64 @@ describe('OpenAIQuotaResetCell 自动用卡运行态', () => {
     })
     const wrapper = mount(OpenAIQuotaResetCell, { props: { account } })
     expect(wrapper.find('[data-testid="auto-reset-credit-state"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('仅开启临期兜底时显示到期原因和目标卡时间，渲染不调用上游', () => {
+    const account = makeAccount({
+      schedulable: false,
+      extra: {
+        auto_reset_credit_enabled: false,
+        auto_reset_credit_expiry_enabled: true,
+        codex_auto_reset_credit_state: {
+          status: 'success',
+          trigger_reason: 'credit_expiring',
+          credit_expires_at: FUTURE_EXPIRY_EARLY,
+          available_count: 1
+        }
+      }
+    })
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account } })
+    expect(wrapper.get('[data-testid="auto-reset-credit-state"]').text()).toContain('admin.accounts.openaiQuotaReset.autoStatus.success')
+    expect(wrapper.get('[data-testid="auto-reset-credit-reason"]').text()).toBe('admin.accounts.openaiQuotaReset.autoTrigger.creditExpiring')
+    expect(wrapper.get('[data-testid="auto-reset-credit-target-expiry"]').attributes('title')).toContain('admin.accounts.openaiQuotaReset.expiresAtFull:')
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('临期尝试未消费时显示保留卡状态，不显示成功也不再次触发重置', () => {
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: makeAccount({ extra: {
+      auto_reset_credit_expiry_enabled: true,
+      codex_auto_reset_credit_state: {
+        status: 'not_consumed', trigger_reason: 'credit_expiring', credit_expires_at: FUTURE_EXPIRY_EARLY, available_count: 2
+      }
+    } }) } })
+    expect(wrapper.get('[data-testid="auto-reset-credit-state"]').text()).toContain('admin.accounts.openaiQuotaReset.autoStatus.notConsumed')
+    expect(wrapper.text()).not.toContain('admin.accounts.openaiQuotaReset.autoStatus.success')
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('显示用量触发原因并兼容无原因字段的旧运行态', async () => {
+    const account = makeAccount({
+      extra: {
+        auto_reset_credit_enabled: true,
+        codex_auto_reset_credit_state: {
+          status: 'success', trigger_reason: 'usage_threshold', trigger_window: '5h', available_count: 1
+        }
+      }
+    })
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account } })
+    expect(wrapper.get('[data-testid="auto-reset-credit-reason"]').text()).toBe('admin.accounts.openaiQuotaReset.autoTrigger.usageThreshold')
+    expect(wrapper.get('[data-testid="auto-reset-credit-state"]').text()).toContain('5h')
+    await wrapper.setProps({ account: makeAccount({ extra: {
+      auto_reset_credit_expiry_enabled: true,
+      codex_auto_reset_credit_state: { status: 'success', available_count: 1 }
+    } }) })
+    expect(wrapper.find('[data-testid="auto-reset-credit-reason"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="auto-reset-credit-state"]').text()).not.toContain('undefined')
     wrapper.unmount()
   })
 })
