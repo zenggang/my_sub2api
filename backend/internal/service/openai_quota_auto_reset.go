@@ -313,6 +313,10 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 	}
 	openAIAutoResetMigrateAttempt(state)
 	pruneOpenAIAutoResetAttempts(state, now)
+	// 已确认消费的本地恢复不依赖上游当前可查询；共享流程会先解除本地限流，再刷新额度。
+	if resolved, resolveErr := s.resolveStoredAttempt(ctx, accountID, state, nil, assessment); resolved || resolveErr != nil {
+		return resolveErr
+	}
 	needsQuery := (usageEnabled && (openAIAutoResetSnapshotStale(account.Extra, now) ||
 		(assessment.resetReached && !openAIAutoResetNoCreditConfirmed(state, now)))) ||
 		openAIAutoResetExpiryQueryDue(state, config, now) || openAIAutoResetHasPending(state)
@@ -510,7 +514,9 @@ func (s *OpenAIQuotaAutoResetService) finishAttempt(ctx context.Context, account
 	if attempt.Outcome == openAIAutoResetAttemptPending {
 		return s.failState(ctx, accountID, state, "RESET_RESULT_UNCONFIRMED", nil)
 	}
-	openAIAutoResetSetNextExpiry(state, usage.autoResetCandidates, time.Now())
+	if usage != nil {
+		openAIAutoResetSetNextExpiry(state, usage.autoResetCandidates, time.Now())
+	}
 	if attempt.Outcome == openAIAutoResetAttemptNotConsumed {
 		state.Status = OpenAIAutoResetStatusNotConsumed
 		state.ErrorCode = strings.ToUpper(strings.TrimSpace(result.Code))
@@ -584,12 +590,17 @@ func (s *OpenAIQuotaAutoResetService) resolveStoredAttempt(ctx context.Context, 
 		if err != nil {
 			return false, err
 		}
+		consumeResult := decodeOpenAIAutoResetConsumeResult(data)
+		if usage == nil && openAIAutoResetConsumeOutcome(consumeResult) != openAIAutoResetAttemptConsumed {
+			// 查询前只补已确认消费的恢复；未确认或未消费结果仍需走原来的实时查询流程。
+			return false, nil
+		}
 		state.AttemptCreditHash = attempt.CreditHash
 		state.CreditExpiresAt = attempt.CreditExpiresAt
 		state.TriggerReason = attempt.TriggerReason
 		assessment.triggerReason = attempt.TriggerReason
 		assessment.creditExpiresAt = attempt.CreditExpiresAt
-		return true, s.finishAttempt(ctx, accountID, state, usage, assessment, decodeOpenAIAutoResetConsumeResult(data))
+		return true, s.finishAttempt(ctx, accountID, state, usage, assessment, consumeResult)
 	}
 	return false, nil
 }

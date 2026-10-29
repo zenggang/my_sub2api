@@ -500,6 +500,38 @@ func TestOpenAIQuotaAutoResetService_RestartFinishesConsumedBeforePostProcess(t 
 	require.Equal(t, openAIAutoResetAttemptConsumed, repo.stateForTest().Attempts[0].Outcome)
 }
 
+func TestOpenAIQuotaAutoResetService_PostProcessRecoveryPrecedesFailedQuotaQuery(t *testing.T) {
+	svc, repo, quota, recoverer := newExpiryResetFixture(t)
+	require.NoError(t, svc.evaluateAccount(context.Background(), 601))
+	state := repo.stateForTest()
+	state.PostProcessPending = true
+	state.ErrorCode = ""
+	state.AvailableCount = 1
+	repo.setExtraForTest(OpenAIAutoResetCreditStateExtraKey, state)
+	quota.queryErr = errors.New("upstream quota temporarily unavailable")
+	quota.resetCalls.Store(0)
+	quota.queryCalls.Store(0)
+	recoverer.calls.Store(0)
+	restarted := NewOpenAIQuotaAutoResetService(repo, quota, recoverer, svc.idempotency, nil, nil, nil)
+	require.Error(t, restarted.evaluateAccount(context.Background(), 601))
+	require.Equal(t, int32(1), recoverer.calls.Load(), "上游额度查询失败前已执行本地解除限流")
+	require.Equal(t, int32(1), quota.queryCalls.Load(), "无需先查询额度再进入已确认消费的恢复")
+	require.Zero(t, quota.resetCalls.Load())
+	failed := repo.stateForTest()
+	require.True(t, failed.PostProcessPending)
+	require.Equal(t, OpenAIQuotaResetWarningCacheRefreshFailed, failed.ErrorCode)
+	require.Equal(t, 1, failed.AvailableCount, "查询失败时保留已有数量，不伪造新快照")
+
+	quota.queryErr = nil
+	quota.usage.RateLimitResetCredits.AvailableCount = 0
+	quota.usage.autoResetCandidates = nil
+	require.NoError(t, restarted.evaluateAccount(context.Background(), 601))
+	require.Equal(t, int32(2), recoverer.calls.Load())
+	require.Zero(t, quota.resetCalls.Load())
+	require.False(t, repo.stateForTest().PostProcessPending)
+	require.Zero(t, repo.stateForTest().AvailableCount)
+}
+
 type expiryScanTestRepo struct {
 	*autoResetTestAccountRepo
 	statusFilter string
