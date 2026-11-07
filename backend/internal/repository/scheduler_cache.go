@@ -1319,6 +1319,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_oauth_passthrough",
 		// 逻辑账号的路由开关随快照保留，避免轻量调度快照丢失账号级出站策略。
 		"openai_account_routing_us_cr_enabled",
+		// 生图尺寸档位在候选过滤阶段按本投影判定，裁掉后受限账号会接到不允许的档位。
+		service.AccountExtraOpenAIImageSizeTiers,
 		"codex_fingerprint_mode",
 		"codex_fingerprint_seed",
 		"codex_5h_used_percent",

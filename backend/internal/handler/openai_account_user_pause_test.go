@@ -258,7 +258,9 @@ func TestAccountUserPauseAsyncImageExecutionReadsCurrentRules(t *testing.T) {
 	group := int64(7)
 	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 9, UserID: 42, GroupID: &group, User: &service.User{ID: 42, Status: service.StatusActive}, Group: &service.Group{ID: group, Platform: service.PlatformOpenAI, AllowImageGeneration: true}})
 	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 42})
-	taskCtx, recorder, cancelTask := newAsyncImageContext(c, body, time.Second*5)
+	taskCtx, recorder, cancelTask, err := newAsyncImageContext(c, body, time.Second*5)
+	// 上游新增请求体内存预算校验，异步上下文创建成功后才能验证执行时暂停规则。
+	require.NoError(t, err)
 	defer cancelTask()
 	// 提交上下文分离后才暂停 A，worker 必须读取执行时规则，不能冻结提交时的名单。
 	rules.paused[42][1] = true
