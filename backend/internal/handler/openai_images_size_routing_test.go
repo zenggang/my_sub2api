@@ -41,6 +41,8 @@ func newOpenAIImagesSizeRoutingTestHandler(t *testing.T, accounts []service.Acco
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
 	)
+	// 尺寸分流测试显式注入无暂停规则，避免私有准入保护先于被测选号逻辑拒绝请求。
+	gatewayService.SetAccountUserPauseService(newUnpausedAccountUserPauseService())
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
 	handler := NewOpenAIGatewayHandler(
