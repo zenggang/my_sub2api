@@ -52,6 +52,29 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("resolve responses tools: %w", err)
 	}
+	// 新版 Codex 把 custom exec 放入 namespace；HTTP 兼容桥只会展开 function，
+	// 先按账号提升 custom，再复用原有降级、流式回传和工具结果续聊逻辑。
+	if account.CodexNamespaceToolsEnabled() && GetOpenAIClientTransport(c) != OpenAIClientTransportWS && hasCodexNamespaceCustomTools(effectiveTools) {
+		hoistedBody, changed, hoistErr := hoistCodexRuntimeTools(body)
+		if hoistErr != nil {
+			logger.L().Warn("openai responses: rejected codex runtime tools",
+				zap.Int64("account_id", account.ID), zap.String("model", originalModel), zap.Error(hoistErr))
+			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", hoistErr.Error())
+			return nil, hoistErr
+		}
+		if changed {
+			if err := json.Unmarshal(hoistedBody, &responsesReq); err != nil {
+				return nil, fmt.Errorf("parse hoisted responses tools: %w", err)
+			}
+			effectiveTools, err = apicompat.EffectiveResponsesTools(&responsesReq)
+			if err != nil {
+				return nil, fmt.Errorf("resolve hoisted responses tools: %w", err)
+			}
+			body = hoistedBody
+			logger.L().Debug("openai responses: hoisted codex runtime tools",
+				zap.Int64("account_id", account.ID), zap.String("model", originalModel), zap.Int("tools", len(effectiveTools)))
+		}
+	}
 	customTools := apicompat.CustomToolNames(effectiveTools)
 	functionTools := apicompat.FunctionToolNames(effectiveTools)
 	toolSearch := apicompat.HasToolSearchTool(effectiveTools)
