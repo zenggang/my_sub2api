@@ -2,12 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -220,44 +224,157 @@ func TestEnrichTokenInfo_WorkspaceEntitlementDoesNotOverridePersonalSubscription
 	require.Equal(t, 1, subscriptionCalls)
 }
 
-// 单个人账号（poid == chatgpt_account_id）是绝大多数情况，行为必须保持不变：
-// 直接用 accounts/check 的 entitlement，不额外打订阅端点。
-func TestEnrichTokenInfo_KeepsEntitlementWhenAccountMatches(t *testing.T) {
+// 同一账号的权益期限也可能晚于订阅期限，必须按实际 active_until 构建保存凭据。
+func TestEnrichTokenInfo_PersonalSubscriptionPrefersActiveUntil(t *testing.T) {
 	const personalAccountID = "personal-account-a"
 	entitlementExpiresAt := time.Now().Add(720 * time.Hour).UTC().Format(time.RFC3339)
+	activeUntil := time.Now().Add(714 * time.Hour).UTC().Format(time.RFC3339)
 
-	subscriptionCalls := 0
-	server := newChatGPTBackendTestServer(t, chatGPTBackendTestServerConfig{
-		accountsCheck: map[string]any{
-			"accounts": map[string]any{
-				personalAccountID: map[string]any{
-					"account": map[string]any{
-						"account_id": personalAccountID,
-						"plan_type":  "plus",
-						"is_default": true,
+	for _, plan := range []string{"free", "go", "plus", "prolite", "pro", "promax", ""} {
+		t.Run("plan="+plan, func(t *testing.T) {
+			accountPlan := plan
+			if accountPlan == "" {
+				accountPlan = "promax"
+			}
+			subscriptionCalls := 0
+			server := newChatGPTBackendTestServer(t, chatGPTBackendTestServerConfig{
+				accountsCheck: map[string]any{
+					"accounts": map[string]any{
+						personalAccountID: map[string]any{
+							"account":     map[string]any{"account_id": personalAccountID, "plan_type": accountPlan},
+							"entitlement": map[string]any{"expires_at": entitlementExpiresAt},
+						},
 					},
-					"entitlement": map[string]any{"expires_at": entitlementExpiresAt},
 				},
-			},
-		},
-		onSubscription: func(string) map[string]any {
-			subscriptionCalls++
-			return map[string]any{}
-		},
-	})
-	defer server.Close()
+				onSubscription: func(accountID string) map[string]any {
+					subscriptionCalls++
+					require.Equal(t, personalAccountID, accountID)
+					return map[string]any{"plan_type": accountPlan, "active_until": activeUntil}
+				},
+			})
+			defer server.Close()
 
-	tokenInfo := &OpenAITokenInfo{
-		AccessToken:      "access-token",
-		ChatGPTAccountID: personalAccountID,
-		OrganizationID:   personalAccountID,
-		PlanType:         "plus",
+			tokenInfo := &OpenAITokenInfo{
+				AccessToken:           "access-token",
+				ChatGPTAccountID:      personalAccountID,
+				OrganizationID:        personalAccountID,
+				PlanType:              plan,
+				SubscriptionExpiresAt: entitlementExpiresAt,
+			}
+			svc := &OpenAIOAuthService{privacyClientFactory: newTestPrivacyClientFactory()}
+			svc.enrichTokenInfo(context.Background(), tokenInfo, "")
+
+			require.Equal(t, accountPlan, tokenInfo.PlanType)
+			require.Equal(t, activeUntil, tokenInfo.SubscriptionExpiresAt)
+			require.Equal(t, activeUntil, svc.BuildAccountCredentials(tokenInfo)["subscription_expires_at"])
+			require.Equal(t, 1, subscriptionCalls)
+		})
 	}
-	svc := &OpenAIOAuthService{privacyClientFactory: newTestPrivacyClientFactory()}
-	svc.enrichTokenInfo(context.Background(), tokenInfo, "")
+}
 
-	require.Equal(t, entitlementExpiresAt, tokenInfo.SubscriptionExpiresAt)
-	require.Zero(t, subscriptionCalls, "账号一致时不应额外请求订阅端点")
+func TestOpenAITokenRefresher_SubscriptionLookupFailurePreservesSavedExpiry(t *testing.T) {
+	const personalAccountID = "personal-account-a"
+	savedExpiry := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	entitlementExpiresAt := time.Now().Add(30 * time.Hour).UTC().Format(time.RFC3339)
+	for _, tc := range []struct {
+		name        string
+		status      int
+		activeUntil string
+	}{
+		{name: "upstream unavailable", status: http.StatusServiceUnavailable},
+		{name: "missing active_until"},
+		{name: "invalid active_until", activeUntil: "not-a-date"},
+		{name: "missing timezone", activeUntil: "2027-01-01T15:11:19"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newChatGPTBackendTestServer(t, chatGPTBackendTestServerConfig{
+				accountsCheck: map[string]any{"accounts": map[string]any{
+					personalAccountID: map[string]any{
+						"account":     map[string]any{"account_id": personalAccountID, "plan_type": "promax"},
+						"entitlement": map[string]any{"expires_at": entitlementExpiresAt},
+					},
+				}},
+				subscriptionStatus: tc.status,
+				onSubscription: func(string) map[string]any {
+					return map[string]any{"plan_type": "promax", "active_until": tc.activeUntil}
+				},
+			})
+			defer server.Close()
+			svc := &OpenAIOAuthService{privacyClientFactory: newTestPrivacyClientFactory()}
+			refresher := NewOpenAITokenRefresher(svc, nil)
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
+				"access_token": "access-token", "chatgpt_account_id": personalAccountID,
+				"organization_id": personalAccountID, "plan_type": "promax",
+				"subscription_expires_at": savedExpiry,
+			}}
+
+			credentials, err := refresher.Refresh(context.Background(), account)
+			require.NoError(t, err, "订阅信息补全失败不应使令牌刷新失败")
+			require.Equal(t, savedExpiry, credentials["subscription_expires_at"])
+
+			delete(account.Credentials, "subscription_expires_at")
+			credentials, err = refresher.Refresh(context.Background(), account)
+			require.NoError(t, err)
+			require.NotContains(t, credentials, "subscription_expires_at", "首次获取失败时不能用权益时间冒充订阅时间")
+		})
+	}
+}
+
+type openaiSubscriptionRefreshClient struct {
+	openaiOAuthClientRefreshStub
+	response *openai.TokenResponse
+}
+
+func (s *openaiSubscriptionRefreshClient) RefreshTokenWithClientID(context.Context, string, string, string) (*openai.TokenResponse, error) {
+	return s.response, nil
+}
+
+func TestOpenAITokenRefresher_RefreshPersistsSubscriptionExpiry(t *testing.T) {
+	const personalAccountID = "personal-account-a"
+	savedExpiry := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	activeUntil := time.Now().Add(48 * time.Hour).In(time.FixedZone("UTC+8", 8*60*60)).Format(time.RFC3339)
+	entitlementExpiresAt := time.Now().Add(54 * time.Hour).UTC().Format(time.RFC3339)
+	for _, success := range []bool{true, false} {
+		t.Run(map[bool]string{true: "subscription available", false: "subscription unavailable"}[success], func(t *testing.T) {
+			server := newChatGPTBackendTestServer(t, chatGPTBackendTestServerConfig{
+				accountsCheck: map[string]any{"accounts": map[string]any{
+					personalAccountID: map[string]any{
+						"account":     map[string]any{"account_id": personalAccountID, "plan_type": "promax"},
+						"entitlement": map[string]any{"expires_at": entitlementExpiresAt},
+					},
+				}},
+				onSubscription: func(accountID string) map[string]any {
+					require.Equal(t, personalAccountID, accountID)
+					if !success {
+						return map[string]any{}
+					}
+					return map[string]any{"plan_type": "promax", "active_until": activeUntil}
+				},
+			})
+			defer server.Close()
+			claims := `{"https://api.openai.com/auth":{"chatgpt_account_id":"personal-account-a","chatgpt_plan_type":"promax"}}`
+			client := &openaiSubscriptionRefreshClient{response: &openai.TokenResponse{
+				AccessToken: "new-access-token", RefreshToken: "new-refresh-token", ExpiresIn: 3600,
+				IDToken: "e30." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".signature",
+			}}
+			svc := &OpenAIOAuthService{oauthClient: client, privacyClientFactory: newTestPrivacyClientFactory()}
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
+				"access_token": "old-access-token", "refresh_token": "old-refresh-token",
+				"subscription_expires_at": savedExpiry, "model_mapping": map[string]string{"source": "target"},
+			}}
+
+			credentials, err := NewOpenAITokenRefresher(svc, nil).Refresh(context.Background(), account)
+			require.NoError(t, err)
+			wantExpiry := savedExpiry
+			if success {
+				wantExpiry = activeUntil
+			}
+			require.Equal(t, wantExpiry, credentials["subscription_expires_at"])
+			require.Equal(t, "new-access-token", credentials["access_token"])
+			require.Equal(t, "new-refresh-token", credentials["refresh_token"])
+			require.Equal(t, account.Credentials["model_mapping"], credentials["model_mapping"])
+		})
+	}
 }
 
 // 反向不变式：套餐本身就取自 accounts/check（JWT 没有 plan_type）时，到期时间必须
@@ -303,8 +420,9 @@ func TestEnrichTokenInfo_WorkspacePlanTypeKeepsItsOwnExpiry(t *testing.T) {
 }
 
 type chatGPTBackendTestServerConfig struct {
-	accountsCheck  map[string]any
-	onSubscription func(accountID string) map[string]any
+	accountsCheck      map[string]any
+	onSubscription     func(accountID string) map[string]any
+	subscriptionStatus int
 }
 
 // newChatGPTBackendTestServer 同时接管 accounts/check 与 subscriptions 两个端点，
@@ -317,6 +435,9 @@ func newChatGPTBackendTestServer(t *testing.T, cfg chatGPTBackendTestServerConfi
 		case "/backend-api/accounts/check/v4-2023-04-27":
 			_ = json.NewEncoder(w).Encode(cfg.accountsCheck)
 		case "/backend-api/subscriptions":
+			if cfg.subscriptionStatus != 0 {
+				w.WriteHeader(cfg.subscriptionStatus)
+			}
 			body := map[string]any{}
 			if cfg.onSubscription != nil {
 				body = cfg.onSubscription(r.URL.Query().Get("account_id"))
@@ -336,11 +457,15 @@ func newChatGPTBackendTestServer(t *testing.T, cfg chatGPTBackendTestServerConfi
 	return server
 }
 
-// enrichTokenInfo 收尾还会调用 disableOpenAITraining，它的 URL 是常量、指向真实
-// chatgpt.com，测试无法接管。给客户端一个短超时让它快速失败——该调用只写
-// PrivacyMode，不影响本组用例的断言。
+// 本组测试使用真实 HTTP 客户端访问本地替身，隐私设置等其他请求在出站前拒绝。
 func newTestPrivacyClientFactory() PrivacyClientFactory {
 	return func(string) (*req.Client, error) {
-		return req.C().SetTimeout(time.Second), nil
+		return req.C().SetTimeout(time.Second).OnBeforeRequest(func(_ *req.Client, request *req.Request) error {
+			target, err := url.Parse(request.RawURL)
+			if err != nil || target.Hostname() != "127.0.0.1" {
+				return errors.New("external requests disabled in subscription tests")
+			}
+			return nil
+		}), nil
 	}
 }

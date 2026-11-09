@@ -223,8 +223,8 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 }
 
 // fetchChatGPTSubscriptionExpiresAt reads the lightweight subscription endpoint used by
-// ChatGPT/Codex clients. Some Plus accounts no longer expose entitlement.expires_at in
-// accounts/check, but this endpoint still returns active_until.
+// ChatGPT/Codex clients. active_until is the subscription deadline; the
+// entitlement.expires_at from accounts/check can include additional access time.
 func fetchChatGPTSubscriptionExpiresAt(ctx context.Context, clientFactory PrivacyClientFactory, accessToken, proxyURL, accountID string) string {
 	accountID = strings.TrimSpace(accountID)
 	if accessToken == "" || accountID == "" || clientFactory == nil {
@@ -274,7 +274,7 @@ func fetchChatGPTSubscriptionExpiresAt(ctx context.Context, clientFactory Privac
 		return ""
 	}
 
-	slog.Info("chatgpt_subscription_success", "plan_type", result.PlanType, "subscription_expires_at", activeUntil, "account_id", accountID)
+	slog.Info("chatgpt_subscription_success", "plan_type", result.PlanType, "subscription_expires_at", activeUntil, "account_id", accountID, "source", "subscriptions.active_until")
 	return activeUntil
 }
 
