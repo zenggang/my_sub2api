@@ -58,3 +58,12 @@ After deployment use the selected test key through port 8080 to verify tool
 results and response.completed; read usage for actual model/account and confirm
 the executable SHA and effective process attestation mode. Save a release record
 under ignored docs-local. A binary health response alone is not acceptance.
+
+After remote business acceptance, complete the local cleanup step in
+[RELEASING.md](../../docs/RELEASING.md). The Mac is a build workstation, so do not
+retain full release packages locally for rollback. Preserve small records, then
+remove this run's build directory, temporary source clone and delivery copy.
+`cleanup-local.py --provenance RUN/build-provenance.json --deployment-result
+RUN/deployment/deployment-result.json` previews the paths; add `--apply` to clean
+them and save the result under `RUN/local-cleanup/`. Pending releases and
+failed deployments must remain available until deployment or diagnosis finishes.

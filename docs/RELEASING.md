@@ -191,6 +191,28 @@ python3 prepare.py stage "${SUB2API_PREPARED:?}"
 | 官方 updater 覆盖私有包 | 私有版本不用官方 update/管理页升级；旧 updater 仅 check-only，timer 保持禁用 |
 | 回滚文件格式不兼容 | 校验真实备份内容及来源，不把另一套脚本的备份路径直接传给当前 CLI |
 
-## 6. 发布记录
+## 6. 远程验收成功后的本地清理
+
+本机只用于开发和构建，不部署 Sub2API。正式部署及业务验收通过后，**本地清理是发布的默认收尾步骤，已获用户长期授权，无需每次再确认**。服务器上的发布包及回退备份按服务器的保留规则管理，不为了回退而在 Mac 上再留一份完整包。
+
+1. 将源码 commit/tree、版本、二进制和分发包 SHA、manifest、SHA256SUMS、构建日志、测试结果与远程部署/回退定位保存到本次 `docs-local/verification/` 记录。保留这些小文件即可，不复制完整源码归档或二进制。
+2. 清理本次 `releases/fork-<commit>-*` 整个目录，包括展开源码、`node_modules`、内嵌前端、二进制及压缩包；清理本次 `build-sources/` 临时源码副本和交付目录中的重复发布包。
+3. 仅清理本次已完成发布的明确路径，不扫描删除其他发布、开发源码或 Git 工作树。共享 Go/pnpm 缓存、工具链和上游 Git 缓存不在单次发布清理范围。
+4. 回查路径已移除，在发布记录中填写清理结果和测量的回收量。清理失败如实记录并继续处理，不能将未清理的发布标为全部收尾完成。
+
+对于已记录 `build-provenance.json` 和 `deployment-result.json` 的 fork 发布，复用以下入口，先预览再执行。脚本核对两份记录及构建 manifest 的 commit/SHA，保存小文件并限定清理路径：
+
+```bash
+python3 ops/fork-release/cleanup-local.py \
+  --provenance "$SUB2API_RUN/build-provenance.json" \
+  --deployment-result "$SUB2API_RUN/deployment/deployment-result.json"
+python3 ops/fork-release/cleanup-local.py \
+  --provenance "$SUB2API_RUN/build-provenance.json" \
+  --deployment-result "$SUB2API_RUN/deployment/deployment-result.json" --apply
+```
+
+`SUB2API_RUN` 为本次本地验证记录的绝对目录。只打包待发布、候选验证尚未完成或部署失败时，不提前执行成功发布清理；排障结束后再清理对应临时材料。不得在 `build.py` 构建结束时直接删除尚未上传的包。
+
+## 7. 发布记录
 
 每次从 [RELEASE_RECORD_TEMPLATE.md](RELEASE_RECORD_TEMPLATE.md) 建立记录，现场信息放 `docs-local/` 或受限发布材料目录。记录本次运行的证据，不照抄历史通过结果。流程或工具变更时同步更新本文和本地档案；一般发布只新增执行记录，不重写整套方案。

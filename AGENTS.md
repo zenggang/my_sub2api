@@ -4,6 +4,8 @@ This fork follows [docs/FORK_WORKFLOW.md](docs/FORK_WORKFLOW.md). Read it before
 
 Before compiling a release binary, packaging, staging, validating a candidate, deploying, or rolling back, read [docs/RELEASING.md](docs/RELEASING.md) and the local `docs-local/DEPLOYMENT_PROFILE.md`. Reuse their established toolchain and commands; inspect only facts that can change (source SHA, tool compatibility, migrations, live SHA, active requests, and selected smoke credentials). Do not rediscover or invent a release procedure on each run. The currently documented legacy packager builds an official tag plus a pinned patch, not arbitrary fork `release` HEAD; never mislabel its output as a fork build. Record each run using [docs/RELEASE_RECORD_TEMPLATE.md](docs/RELEASE_RECORD_TEMPLATE.md). A missing local profile requires resolving deployment-specific values, not blocking ordinary development tests.
 
+After a remote deployment passes business acceptance, finish by cleaning that run's local build directory (including node_modules and binaries), temporary source clone, and duplicate delivery archives. Preserve small provenance, checksum, test and deployment records. The user's Mac is a build workstation; rollback packages belong on the server. This cleanup is already authorized and needs no repeated confirmation. Follow the cleanup step in RELEASING.md; do not retain local release packages by default or remove shared toolchains/caches as part of a single release. Keep pending packages until deployment, and failed-run material until diagnosis is complete.
+
 ## Branch roles
 
 - `upstream` is `Wei-Shaw/sub2api`; `origin` is `zenggang/my_sub2api`.
