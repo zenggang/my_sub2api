@@ -220,7 +220,7 @@ func (s *AccountTestService) buildAPIKeyAccountTextRequest(ctx context.Context, 
 		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 	applyOpenCodeUpstreamUserAgent(account, apiURL, req.Header)
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverrides(req.Context(), req.Header)
 	applyOpenCodeSessionHeader(nil, account, apiURL, req.Header, body)
 	return req, nil
 }

@@ -156,6 +156,9 @@ type openAIWSHandshakeCompatibilityKey struct {
 	threadID               string
 	clientRequestID        string
 	codexWindowID          string
+	// reportedIdentity 是握手头中由请求头覆写变量（{{user_id}} 等）生成的部分。
+	// 握手头建连后不可变，上报身份不同的请求绝不能共用连接，否则用户会被张冠李戴。
+	reportedIdentity string
 }
 
 type openAIWSConnLease struct {
@@ -2492,7 +2495,8 @@ func normalizeOpenAIWSBetaFeatures(headers http.Header) string {
 
 func normalizeOpenAIWSHandshakeCompatibility(account *Account, headers http.Header) openAIWSHandshakeCompatibilityKey {
 	key := openAIWSHandshakeCompatibilityKey{
-		betaFeatures: normalizeOpenAIWSBetaFeatures(headers),
+		betaFeatures:     normalizeOpenAIWSBetaFeatures(headers),
+		reportedIdentity: account.headerOverrideReportedIdentity(headers),
 		// 路由覆盖在握手时确定，属于硬兼容条件；关闭指纹收敛也不能复用旧路由连接。
 		accountRoutingOverride: normalizeOpenAIWSStableIdentityHeader(headers, openAIAccountRoutingOverrideHeader),
 	}

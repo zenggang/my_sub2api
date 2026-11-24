@@ -188,7 +188,7 @@ func (s *AccountTestService) TestAccountIntelligence(ctx context.Context, accoun
 	}
 	setOpenAIChatGPTAccountHeaders(req.Header, credentialAccount)
 	enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
-	credentialAccount.ApplyHeaderOverrides(req.Header)
+	credentialAccount.ApplyHeaderOverrides(req.Context(), req.Header)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
