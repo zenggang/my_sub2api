@@ -86,7 +86,7 @@ func TestOpenCodeAccountHealthAndIntelligenceUseSelectedNativeProtocolWithoutWri
 				require.Equal(t, account.ID, upstream.accountID)
 				require.Equal(t, "http://127.0.0.1:3128", upstream.proxyURL)
 				require.Equal(t, tc.path, req.URL.Path)
-				require.Equal(t, "opencode/1.0.0", req.Header.Get("User-Agent"))
+				require.Equal(t, openCodeUpstreamUserAgent, req.Header.Get("User-Agent"))
 				_, err := uuid.Parse(req.Header.Get("X-OpenCode-Session"))
 				require.NoError(t, err)
 				body, err := io.ReadAll(req.Body)

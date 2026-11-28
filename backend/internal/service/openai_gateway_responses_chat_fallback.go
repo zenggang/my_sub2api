@@ -22,6 +22,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const OpenAIResponsesToolsUnsupportedReason GatewayFailureReason = "openai_responses_tools_unsupported"
+
 // forwardResponsesViaRawChatCompletions serves /v1/responses clients through an
 // upstream that only supports /v1/chat/completions.
 func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
@@ -52,8 +54,33 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("resolve responses tools: %w", err)
 	}
-	// 新版 Codex 把 custom exec 放入 namespace；HTTP 兼容桥只会展开 function，
-	// 先按账号提升 custom，再复用原有降级、流式回传和工具结果续聊逻辑。
+	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if err := validateGPT61CompatRequest(body, upstreamModel); err != nil {
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	if openai.RequiresResponsesForToolCalls(upstreamModel) && len(effectiveTools) > 0 {
+		err := fmt.Errorf("%s requires Responses for tool calls; this account only supports Chat Completions", normalizeKnownOpenAICodexModel(upstreamModel))
+		// A managed gateway can select another account. Do not commit an error or
+		// attempt a lossy Chat conversion before the existing failover loop runs.
+		// Direct/single-account callers have no selector and keep their JSON 400.
+		if s.accountRepo != nil {
+			return nil, &UpstreamFailoverError{
+				StatusCode:        http.StatusBadRequest,
+				Stage:             GatewayFailureStageRequestCompatibility,
+				Scope:             GatewayFailureScopeRequest,
+				Reason:            OpenAIResponsesToolsUnsupportedReason,
+				NextAccountAction: NextAccountRetry,
+				ClientStatusCode:  http.StatusBadRequest,
+				ClientMessage:     err.Error(),
+			}
+		}
+		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	// 新版 Codex 把 custom exec 放入 namespace；通过实际模型的协议能力检查后，
+	// 再按账号提升 custom，避免把必须使用 Responses 的工具调用降级为 Chat。
 	if account.CodexNamespaceToolsEnabled() && GetOpenAIClientTransport(c) != OpenAIClientTransportWS && hasCodexNamespaceCustomTools(effectiveTools) {
 		hoistedBody, changed, hoistErr := hoistCodexRuntimeTools(body)
 		if hoistErr != nil {
@@ -92,17 +119,6 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
 	}
 
-	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if err := validateGPT61CompatRequest(body, upstreamModel); err != nil {
-		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, err
-	}
-	if openai.RequiresResponsesForToolCalls(upstreamModel) && len(effectiveTools) > 0 {
-		err := fmt.Errorf("%s requires Responses for tool calls; this account only supports Chat Completions", normalizeKnownOpenAICodexModel(upstreamModel))
-		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, err
-	}
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
